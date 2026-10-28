@@ -167,11 +167,11 @@
 
                 </StackPanel>
 
-                <!-- 应用排行（高度与左列一致，内部滚动） -->
+                <!-- 应用排行（与左列同处一个 Grid 行，行高由两列中最高的决定，
+                     自然齐平，无需代码回写高度——回写会形成布局抖动） -->
                 <Border
                     x:Name="AppRankCard"
                     Grid.Column="1"
-                    VerticalAlignment="Top"
                     Padding="16"
                     Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
                     BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"

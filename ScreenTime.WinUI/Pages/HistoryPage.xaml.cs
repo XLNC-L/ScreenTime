@@ -1,3 +1,4 @@
+using Microsoft.UI.Dispatching;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using ScreenTime.Data;
@@ -70,25 +71,48 @@ public partial class HistoryPage : Page
             new LegendItem(x.Category, CategoryPalette.BrushFor(x.Category),
                 catTotal > 0 ? $"{x.Seconds / catTotal * 100:0}%" : "0%")).ToList();
 
-        var iconByApp = _db.GetAllApps().ToDictionary(a => a.Id, a => a.ExePath);
+        var iconByApp = _db.GetAllApps().ToDictionary(a => a.Id,
+            a => (a.ExePath, a.ProcessName, a.IconSource));
         var maxSec = apps.Count > 0 ? Math.Max(apps.Max(a => a.TotalSeconds), 1) : 1;
-        AppList.ItemsSource = apps
+        var rows = apps
             .OrderByDescending(a => a.TotalSeconds)
-            .Select(a => new
+            .Select(a =>
             {
-                Name = a.AppName,
-                BarPercent = a.TotalSeconds / maxSec * 100,
-                Duration = StatsService.FormatDuration(a.TotalSeconds),
-                Icon = SafeIcon(iconByApp.TryGetValue(a.AppId, out var p) ? p : "", a.ProcessName)
-            }).ToList();
+                iconByApp.TryGetValue(a.AppId, out var p);
+                return new AppRankItem(a.AppName, StatsService.FormatDuration(a.TotalSeconds),
+                    a.TotalSeconds / maxSec * 100, p.ExePath, p.ProcessName, p.IconSource);
+            })
+            .ToList();
+        AppList.ItemsSource = rows;
+        FillIconsAsync(rows);
 
         LoadPurpose(from, to);
     }
 
-    private static Microsoft.UI.Xaml.Media.ImageSource? SafeIcon(string exePath, string processName)
+    /// <summary>填充排行图标：缓存命中立即回显；未命中后台并行提取。</summary>
+    private void FillIconsAsync(List<AppRankItem> rows)
     {
-        try { return AppIconService.GetIcon(exePath, processName); }
-        catch { return null; }
+        var ui = DispatcherQueue.GetForCurrentThread();
+        var pending = new List<AppRankItem>();
+        foreach (var row in rows)
+        {
+            var cached = AppIconService.GetCachedIcon(row.ExePath, row.ProcessName, row.IconSource);
+            if (cached is not null) row.Icon = cached;
+            else pending.Add(row);
+        }
+        if (pending.Count == 0) return;
+
+        _ = System.Threading.Tasks.Task.Run(() =>
+        {
+            Parallel.ForEach(pending, row =>
+            {
+                var bytes = AppIconService.GetIconBytes(row.ExePath, row.ProcessName, row.IconSource);
+                if (bytes is null) return;
+                var capture = bytes;
+                ui.TryEnqueue(() => row.Icon =
+                    AppIconService.BytesToImageCached(capture, row.ExePath, row.ProcessName, row.IconSource));
+            });
+        });
     }
 
     private void LoadPurpose(DateTime fromUtc, DateTime toUtc)

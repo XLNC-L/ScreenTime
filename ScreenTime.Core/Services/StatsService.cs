@@ -42,6 +42,20 @@ public static class StatsService
         return $"{t.Seconds} 秒";
     }
 
+    /// <summary>
+    /// 只到分钟粒度的时长，用于「今日」页四张卡片这类不需要秒级精度的展示。
+    /// 调用方按整数分钟算好差值（分钟向下取整），保证几个数字显示出来仍能严格相加。
+    /// </summary>
+    public static string FormatDurationMinute(double seconds)
+    {
+        seconds = Sanitize(seconds);
+        var minutes = (long)Math.Floor(seconds / 60.0);
+        if (minutes < 1) return "不足 1 分";
+        var h = minutes / 60;
+        var m = minutes % 60;
+        return h > 0 ? $"{h} 小时 {m} 分" : $"{m} 分";
+    }
+
     public static string FormatHours(double seconds)
     {
         var h = Sanitize(seconds) / 3600.0;

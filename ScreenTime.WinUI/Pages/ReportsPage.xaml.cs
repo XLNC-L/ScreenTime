@@ -115,20 +115,32 @@ public partial class ReportsPage : Page
             DeltaText.Foreground = Application.Current.Resources["TextFillColorSecondaryBrush"] as Brush;
         }
 
-        // 每日柱状（只到已过去的日期，不再画未来空白柱）
+        // 每日柱状（只到已过去的日期，不再画未来空白柱）。
+        // 原来逐日调用 QuerySegments + QueryAppUsage，一个月 = 60+ 次查询，全在 UI 线程，
+        // 切月会明显卡一下。现在复用上面已拉取的 segments，内存里按本地日切分：
+        // 与逐日查询同源同语义（片段与当日窗口重叠即整条计入该日）。
+        var catByApp = apps.ToDictionary(a => a.AppId, a => a.Category);
         var dayTotals = new List<(DateTime Day, double Seconds)>();
+        var dayLeadCat = new Dictionary<DateTime, string>();
         foreach (var day in StatsService.EachDay(from, effectiveTo))
         {
-            var (df, dt) = StatsService.DayRange(day);
-            var ds = _db.QuerySegments(df, dt);
-            dayTotals.Add((day, StatsService.UnionSeconds(ds.Select(s => (s.Start, s.End)).ToList())));
+            var df = day.ToUniversalTime();
+            var dt = day.AddDays(1).ToUniversalTime();
+            var daySegs = segments.Where(s => s.Start < dt && s.End > df).ToList();
+
+            var secByApp = new Dictionary<int, double>();
+            foreach (var (s, e, appId, _) in daySegs)
+                secByApp[appId] = secByApp.GetValueOrDefault(appId) + (e - s).TotalSeconds;
+
+            dayTotals.Add((day, StatsService.UnionSeconds(daySegs.Select(s => (s.Start, s.End)).ToList())));
+
+            var leadApp = secByApp.OrderByDescending(kv => kv.Value).FirstOrDefault().Key;
+            dayLeadCat[day] = leadApp != 0 && catByApp.TryGetValue(leadApp, out var c) ? c : "未分类";
         }
         var maxDay = dayTotals.Count > 0 ? Math.Max(dayTotals.Max(d => d.Seconds), 1) : 1;
         Bars.ItemsSource = dayTotals.Select((d, idx) =>
         {
-            var (df, dt) = StatsService.DayRange(d.Day);
-            var leadCat = _db.QueryAppUsage(df, dt)
-                .OrderByDescending(a => a.TotalSeconds).FirstOrDefault()?.Category ?? "未分类";
+            var leadCat = dayLeadCat.GetValueOrDefault(d.Day, "未分类");
             return new
             {
                 Label = dayCount <= 10 || d.Day.Day % 5 == 1 || idx == dayCount - 1

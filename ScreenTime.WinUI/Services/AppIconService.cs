@@ -1,53 +1,96 @@
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.IO;
+using System.Runtime.InteropServices;
 using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Media.Imaging;
 using Windows.Storage.Streams;
 
 namespace ScreenTime.Services;
 
-/// <summary>从可执行文件提取关联图标并转为 WinUI 图像源。</summary>
+/// <summary>
+/// 从可执行文件提取关联图标并转为 WinUI 图像源。
+///
+/// 提取链路拆成两段：
+///  - <see cref="GetIconBytes"/>：提取 + PNG 编码 + 透明裁剪，是重活，任意线程可调（内部缓存字节）；
+///  - <see cref="BytesToImage"/>：字节转 BitmapImage，必须留在 UI 线程，解码限 48px 内存很小。
+/// 页面排行先显示空占位，后台线程取字节、UI 线程解码填充，首屏不再卡。
+/// </summary>
 public static class AppIconService
 {
-    private static readonly Dictionary<string, ImageSource?> Cache = new(StringComparer.OrdinalIgnoreCase);
+    /// <summary>提取字节缓存：路径 → PNG 字节（ConcurrentDictionary 供后台线程安全访问）。</summary>
+    private static readonly ConcurrentDictionary<string, byte[]?> BytesCache = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>UI 线程 ImageSource 缓存，避免同一路径反复解码。</summary>
+    private static readonly Dictionary<string, ImageSource?> UiCache = new(StringComparer.OrdinalIgnoreCase);
+    private static readonly object UiLock = new();
+
+    /// <summary>显示尺寸 24 DIP；2x 缩放下 48 物理像素，解码限此尺寸即可，256 原图不占内存。</summary>
+    private const int DecodePx = 48;
 
     public static ImageSource? GetIcon(string exePath) => GetIcon(exePath, null);
 
-    /// <summary>
-    /// 优先用显式图标源（UWP 包内导出的 PNG、快捷方式等）；
-    /// 没有时用记录的可执行路径；路径失效（历史记录指向旧构建目录）时，
-    /// 回退到同名运行中进程的真实路径，避免排行榜里出现空白图标。
-    /// </summary>
+    /// <summary>UI 线程调用：取缓存字节并转 BitmapImage（未缓存时同步提取，可能卡，慎用）。</summary>
     public static ImageSource? GetIcon(string exePath, string? processName, string? iconSource = null)
+    {
+        var key = KeyFor(exePath, processName, iconSource);
+        if (key.Length == 0) return null;
+
+        var cached = GetCachedIcon(exePath, processName, iconSource);
+        if (cached != null) return cached;
+
+        var img = BytesToImage(GetIconBytes(exePath, processName, iconSource));
+        lock (UiLock)
+        {
+            UiCache[key] = img;
+        }
+        return img;
+    }
+
+    /// <summary>UI 线程调用：只在缓存命中时返回 ImageSource，未命中返回 null（交给后台提取）。</summary>
+    public static ImageSource? GetCachedIcon(string exePath, string? processName, string? iconSource = null)
+    {
+        var key = KeyFor(exePath, processName, iconSource);
+        if (key.Length == 0) return null;
+        lock (UiLock)
+        {
+            return UiCache.TryGetValue(key, out var c) ? c : null;
+        }
+    }
+
+    private static string KeyFor(string exePath, string? processName, string? iconSource)
+    {
+        if (!string.IsNullOrWhiteSpace(iconSource)) return iconSource;
+        if (!string.IsNullOrWhiteSpace(exePath)) return exePath;
+        return processName ?? "";
+    }
+
+    /// <summary>
+    /// 任意线程调用：取图标的 PNG 字节。
+    /// 优先用显式图标源（UWP 包内导出的 PNG、快捷方式等）；
+    /// 没有时用记录的可执行路径（高分辨率提取，256 → 128 → 64 → 32 逐级回退）；
+    /// 路径失效（历史记录指向旧构建目录）时，回退到同名运行中进程的真实路径。
+    /// </summary>
+    public static byte[]? GetIconBytes(string exePath, string? processName, string? iconSource = null)
     {
         if (!string.IsNullOrWhiteSpace(iconSource) && File.Exists(iconSource))
         {
-            if (Cache.TryGetValue(iconSource, out var cachedIcon)) return cachedIcon;
-            var fromSource = LoadImageFile(iconSource);
-            Cache[iconSource] = fromSource;
-            if (fromSource != null) return fromSource;
+            if (BytesCache.TryGetValue(iconSource, out var cachedSource)) return cachedSource;
+            var bytes = LoadPngBytes(iconSource);
+            BytesCache[iconSource] = bytes;
+            if (bytes != null) return bytes;
         }
 
         var path = ResolvePath(exePath, processName);
         if (string.IsNullOrEmpty(path)) return null;
-        if (Cache.TryGetValue(path, out var cached)) return cached;
+        if (BytesCache.TryGetValue(path, out var cached)) return cached;
 
-        ImageSource? result = null;
+        byte[]? result = null;
         try
         {
             if (File.Exists(path))
             {
-                using var icon = System.Drawing.Icon.ExtractAssociatedIcon(path);
-                if (icon != null)
-                {
-                    using var bmp = icon.ToBitmap();
-                    using var ms = new MemoryStream();
-                    bmp.Save(ms, System.Drawing.Imaging.ImageFormat.Png);
-                    ms.Position = 0;
-                    var bitmap = new BitmapImage();
-                    bitmap.SetSource(ms.AsRandomAccessStream());
-                    result = bitmap;
-                }
+                result = ExtractHighResIcon(path) ?? ExtractAssociatedIconBytes(path);
             }
         }
         catch
@@ -55,21 +98,18 @@ public static class AppIconService
             result = null;
         }
 
-        Cache[path] = result;
+        BytesCache[path] = result;
         return result;
     }
 
-    /// <summary>直接读取一张图片文件（UWP 图标已由 UwpAppService 导出为 PNG）。</summary>
-    private static ImageSource? LoadImageFile(string path)
+    /// <summary>UI 线程调用：PNG 字节转 BitmapImage，解码尺寸限 <see cref="DecodePx"/>。</summary>
+    public static ImageSource? BytesToImage(byte[]? bytes)
     {
+        if (bytes is null || bytes.Length == 0) return null;
         try
         {
-            var bytes = File.ReadAllBytes(path);
-            if (bytes.Length == 0) return null;
-            // UWP 的 Square44x44Logo 四周留了一大圈透明边（实测「计算器」图形只占 31%），
-            // 不裁的话同样尺寸下看着比 Win32 图标小一圈。
-            using var ms = new MemoryStream(TrimTransparentPadding(bytes) ?? bytes);
-            var bitmap = new BitmapImage();
+            using var ms = new MemoryStream(bytes);
+            var bitmap = new BitmapImage { DecodePixelWidth = DecodePx };
             bitmap.SetSource(ms.AsRandomAccessStream());
             return bitmap;
         }
@@ -77,6 +117,87 @@ public static class AppIconService
         {
             return null;
         }
+    }
+
+    /// <summary>UI 线程调用：解码并写入 ImageSource 缓存，排行榜重建后能立即回显。</summary>
+    public static ImageSource? BytesToImageCached(byte[]? bytes, string exePath, string? processName, string? iconSource)
+    {
+        var img = BytesToImage(bytes);
+        var key = KeyFor(exePath, processName, iconSource);
+        if (img != null && key.Length > 0)
+        {
+            lock (UiLock)
+            {
+                UiCache[key] = img;
+            }
+        }
+        return img;
+    }
+
+    /// <summary>直接读取一张图片文件（UWP 图标已由 UwpAppService 导出为 PNG）。</summary>
+    private static byte[]? LoadPngBytes(string path)
+    {
+        try
+        {
+            var bytes = File.ReadAllBytes(path);
+            if (bytes.Length == 0) return null;
+            // UWP 的 Square44x44Logo 四周留了一大圈透明边（实测「计算器」图形只占 31%），
+            // 不裁的话同样尺寸下看着比 Win32 图标小一圈。
+            return TrimTransparentPadding(bytes) ?? bytes;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// 从 exe/dll/ico 提取大图标并转 PNG 字节。
+    /// <see cref="Icon.ExtractAssociatedIcon"/> 最多只能拿到 32×32，高 DPI 下拉伸发糊。
+    /// 用 SHDefExtractIcon（large 按请求尺寸返回）——不要用 PrivateExtractIcons：
+    /// 部分 Windows 11 版本的 shell32 已不导出该符号，调用会抛 EntryPointNotFoundException，
+    /// 导致整条图标链路静默失效（所有图标空白）。
+    /// </summary>
+    private static byte[]? ExtractHighResIcon(string path)
+    {
+        foreach (var size in new[] { 256, 32 })
+        {
+            var large = IntPtr.Zero;
+            var small = IntPtr.Zero;
+            try
+            {
+                if (SHDefExtractIcon(path, 0, 0, out large, out small, (uint)size) != 0 || large == IntPtr.Zero)
+                    continue;
+
+                using var icon = System.Drawing.Icon.FromHandle(large);
+                using var bmp = icon.ToBitmap();
+                using var ms = new MemoryStream();
+                bmp.Save(ms, System.Drawing.Imaging.ImageFormat.Png);
+                if (ms.Length > 0) return ms.ToArray();
+            }
+            catch
+            {
+                // 该尺寸提取失败，继续回退
+            }
+            finally
+            {
+                // SHDefExtractIcon 创建的句柄必须显式销毁，FromHandle 不拥有它
+                if (large != IntPtr.Zero) DestroyIcon(large);
+                if (small != IntPtr.Zero) DestroyIcon(small);
+            }
+        }
+        return null;
+    }
+
+    /// <summary>兜底：ExtractAssociatedIcon 的 32×32。</summary>
+    private static byte[]? ExtractAssociatedIconBytes(string path)
+    {
+        using var icon = System.Drawing.Icon.ExtractAssociatedIcon(path);
+        if (icon == null) return null;
+        using var bmp = icon.ToBitmap();
+        using var ms = new MemoryStream();
+        bmp.Save(ms, System.Drawing.Imaging.ImageFormat.Png);
+        return ms.ToArray();
     }
 
     /// <summary>
@@ -184,4 +305,12 @@ public static class AppIconService
         }
         return "";
     }
+
+    [DllImport("shell32.dll", EntryPoint = "SHDefExtractIconW", CharSet = CharSet.Unicode)]
+    private static extern int SHDefExtractIcon(string lpszFile, int nIconIndex, uint uFlags,
+        out IntPtr phiconLarge, out IntPtr phiconSmall, uint nIconSize);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool DestroyIcon(IntPtr hIcon);
 }
