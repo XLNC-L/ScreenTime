@@ -1,5 +1,5 @@
 using System.Diagnostics;
-using Microsoft.UI.Xaml;
+using Microsoft.UI.Dispatching;
 using ScreenTime.Data;
 using ScreenTime.Native;
 
@@ -31,7 +31,15 @@ public sealed class WatcherService : IDisposable
     private readonly SessionState _session = new();
     private readonly AudioMonitor _audio = new();
     private readonly BrowserTabService _browserTabs = new();
-    private readonly DispatcherTimer _timer;
+    private readonly System.Threading.Timer _timer;
+
+    /// <summary>采集节拍互斥：心跳在后台线程跑，UI 线程也可能读改同一批状态。</summary>
+    private readonly object _gate = new();
+
+    /// <summary>用途标注要弹 TeachingTip，必须回到 UI 线程。</summary>
+    private readonly DispatcherQueue? _uiQueue = DispatcherQueue.GetForCurrentThread();
+
+    private bool _disposed;
 
     private OpenSegment? _fgSegment;
     private readonly Dictionary<uint, OpenSegment> _audioSegments = new();
@@ -62,8 +70,23 @@ public sealed class WatcherService : IDisposable
     public WatcherService(Database db)
     {
         _db = db;
-        _timer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(5) };
-        _timer.Tick += (_, _) => Heartbeat();
+        _timer = new System.Threading.Timer(_ => SafeHeartbeat(), null,
+            System.Threading.Timeout.Infinite, System.Threading.Timeout.Infinite);
+    }
+
+    /// <summary>
+    /// 采集节拍入口。用线程池定时器而不是 <c>DispatcherTimer</c>：
+    /// WinUI 的 XAML 定时器由渲染循环驱动，静默启动（不创建窗口）时完全不触发，
+    /// 导致开机自启的实例只在启动瞬间记录一条，之后再也不动。
+    /// </summary>
+    private void SafeHeartbeat()
+    {
+        if (_disposed) return;
+        // 上一轮还没跑完就跳过本轮，避免心跳叠加
+        if (!Monitor.TryEnter(_gate, 500)) return;
+        try { Heartbeat(); }
+        catch { /* 单次心跳异常不影响后续 */ }
+        finally { Monitor.Exit(_gate); }
     }
 
     public void Start()
@@ -101,28 +124,31 @@ public sealed class WatcherService : IDisposable
         catch { /* 清理失败不影响采集 */ }
 
         ScrubOldTitles();
-        _timer.Start();
-        Heartbeat();
+        _timer.Change(TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(5));
+        SafeHeartbeat();
     }
 
     public void ReloadSettings()
     {
-        _idleLimitSeconds = int.TryParse(_db.GetSetting("idle_limit", "180"), out var n) ? n : 180;
-        _audioEnabled = _db.GetSetting("audio_enabled", "true") != "false";
-        _purposeAskEnabled = _db.GetSetting("purpose_ask_enabled", "false") == "true";
-        _browserTabEnabled = _db.GetSetting("browser_tab_enabled", "true") != "false";
-        if (!_audioEnabled)
+        lock (_gate)
         {
-            foreach (var seg in _audioSegments.Values)
-                CloseSegment(seg);
-            _audioSegments.Clear();
+            _idleLimitSeconds = int.TryParse(_db.GetSetting("idle_limit", "180"), out var n) ? n : 180;
+            _audioEnabled = _db.GetSetting("audio_enabled", "true") != "false";
+            _purposeAskEnabled = _db.GetSetting("purpose_ask_enabled", "false") == "true";
+            _browserTabEnabled = _db.GetSetting("browser_tab_enabled", "true") != "false";
+            if (!_audioEnabled)
+            {
+                foreach (var seg in _audioSegments.Values)
+                    CloseSegment(seg);
+                _audioSegments.Clear();
+            }
         }
     }
 
     private void OnForegroundChanged()
     {
-        // 窗口切换事件：立即结算，提高精度
-        try { TickForeground(DateTime.UtcNow); } catch { /* ignore */ }
+        // 窗口切换事件：立即结算，提高精度（与心跳共用同一把锁，抢不到就交给下一拍）
+        SafeHeartbeat();
     }
 
     private void Heartbeat()
@@ -319,15 +345,27 @@ public sealed class WatcherService : IDisposable
         if (!_purposeAskEnabled || seg.PurposeAsked) return;
         seg.PurposeAsked = true;
         if (!PurposeService.IsGrayArea(seg.ProcessName, category)) return;
-        try { PurposePrompt?.Invoke(seg.RowId, seg.ProcessName); } catch { }
+
+        var rowId = seg.RowId;
+        var process = seg.ProcessName;
+        void Fire()
+        {
+            try { PurposePrompt?.Invoke(rowId, process); } catch { }
+        }
+
+        // 心跳在后台线程，订阅方（MainWindow）要操作 TeachingTip，必须回 UI 线程
+        if (_uiQueue is null || !_uiQueue.TryEnqueue(Fire)) { /* 无窗口时没人订阅，直接丢弃 */ }
     }
 
     /// <summary>用途标注回调：更新当前前台片段用途（若仍在该片段）。</summary>
     public void ApplyForegroundPurpose(long segmentId, string purpose)
     {
-        if (_fgSegment != null && _fgSegment.RowId == segmentId)
-            _fgSegment.Purpose = purpose;
-        _db.UpdateSegmentPurpose(segmentId, purpose);
+        lock (_gate)
+        {
+            if (_fgSegment != null && _fgSegment.RowId == segmentId)
+                _fgSegment.Purpose = purpose;
+            _db.UpdateSegmentPurpose(segmentId, purpose);
+        }
     }
 
     private OpenSegment OpenSegment(int appId, string kind, DateTime now, string title,
@@ -396,9 +434,16 @@ public sealed class WatcherService : IDisposable
 
     public void Dispose()
     {
-        CloseAll();
-        _db.AddSessionEvent("shutdown");
-        _timer.Stop();
+        if (_disposed) return;
+        _disposed = true;
+
+        _timer.Change(System.Threading.Timeout.Infinite, System.Threading.Timeout.Infinite);
+        lock (_gate)
+        {
+            CloseAll();
+            _db.AddSessionEvent("shutdown");
+        }
+        _timer.Dispose();
         _fgWatcher.Dispose();
         _session.Dispose();
     }

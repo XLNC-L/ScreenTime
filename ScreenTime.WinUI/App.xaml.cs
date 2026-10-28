@@ -1,5 +1,7 @@
 using System.IO;
 using System.IO.Pipes;
+using System.Security.AccessControl;
+using System.Security.Principal;
 using System.Threading;
 using Microsoft.UI.Dispatching;
 using Microsoft.UI.Xaml;
@@ -87,14 +89,35 @@ public partial class App : Application
     /// <summary>后台监听唤起请求；每次连接后重建管道，等待下一次。</summary>
     private void StartActivationListener()
     {
+        // 应用通常由任务计划程序以「最高权限」启动，而用户双击 exe 是非提升的。
+        // 默认管道 DACL 只给 SYSTEM / Administrators，非提升进程连接会直接被拒，
+        // 表现为「再点一次图标毫无反应」。显式放开当前用户，跨权限也能唤起。
+        PipeSecurity? security = null;
+        try
+        {
+            security = new PipeSecurity();
+            using var self = WindowsIdentity.GetCurrent();
+            if (self.User is { } sid)
+                security.AddAccessRule(new PipeAccessRule(
+                    sid, PipeAccessRights.ReadWrite, AccessControlType.Allow));
+        }
+        catch
+        {
+            security = null;
+        }
+
         System.Threading.Tasks.Task.Run(() =>
         {
             while (true)
             {
                 try
                 {
-                    using var server = new NamedPipeServerStream(ActivatePipeName, PipeDirection.In,
-                        1, PipeTransmissionMode.Byte, PipeOptions.None);
+                    using var server = security is null
+                        ? new NamedPipeServerStream(ActivatePipeName, PipeDirection.In,
+                            1, PipeTransmissionMode.Byte, PipeOptions.None)
+                        : NamedPipeServerStreamAcl.Create(ActivatePipeName, PipeDirection.In,
+                            1, PipeTransmissionMode.Byte, PipeOptions.None, 0, 0, security);
+
                     server.WaitForConnection();
                     try { server.ReadByte(); } catch { }
                     _uiQueue?.TryEnqueue(ShowMainWindow);

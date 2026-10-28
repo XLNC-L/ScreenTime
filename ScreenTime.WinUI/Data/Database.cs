@@ -149,7 +149,10 @@ public sealed class Database
         c.Open();
         using (var pragma = c.CreateCommand())
         {
-            pragma.CommandText = "PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;";
+            // busy_timeout：采集心跳在后台线程、页面查询在 UI 线程，两边可能同时写。
+            // 让后来的写入等一会儿而不是直接抛 SQLITE_BUSY。
+            pragma.CommandText =
+                "PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=3000;";
             pragma.ExecuteNonQuery();
         }
         return c;
