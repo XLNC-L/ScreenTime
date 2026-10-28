@@ -9,22 +9,40 @@ Windows 本地屏幕时间统计工具。常驻托盘，后台记录前台窗口
 
 ## 快速开始
 
-```bat
-build.cmd
-```
+**环境要求**：Windows 10 1809+ / 11，x64。需要 .NET 8 SDK（构建）。
+运行需要 .NET 8 桌面运行时；Windows App SDK 已随发布目录自带，无需单独安装。
 
-或手动：
+**不需要任何环境变量、配置文件或账号。**
 
 ```bat
-dotnet build ScreenTime.WinUI\ScreenTime.WinUI.csproj -c Release
-dotnet publish ScreenTime.WinUI\ScreenTime.WinUI.csproj -c Release -r win-x64 ^
-    --self-contained false -o ScreenTime-WinUI
+git clone <repo> && cd new-chat
+dotnet build ScreenTime.sln -c Release      :: 构建三个工程
+dotnet test  ScreenTime.sln -c Release      :: 跑单元测试
+build.cmd                                   :: 构建 + 发布到 ScreenTime-WinUI\
 ```
 
 产物在 `ScreenTime-WinUI\ScreenTime.exe`，双击即可运行（首次启动会进托盘）。
 
-**环境要求**：.NET 8 SDK（构建）、.NET 8 桌面运行时（运行）。
-Windows App SDK 已随发布目录自带，无需单独安装。
+手动发布（等价于 `build.cmd`）：
+
+```bat
+dotnet publish ScreenTime.WinUI\ScreenTime.WinUI.csproj -c Release -r win-x64 ^
+    --self-contained false -o ScreenTime-WinUI
+```
+
+## 项目结构
+
+```
+ScreenTime.sln
+├─ ScreenTime.Core/      纯逻辑：数据访问 / 分类 / 统计 / 用途（net8.0，不依赖 WinUI，可单测）
+├─ ScreenTime.WinUI/     WinUI 3 界面与采集（WinExe，x64）
+├─ ScreenTime.Tests/     xUnit 单元测试，只引用 Core
+├─ Directory.Build.props 生成 packages.lock.json（依赖锁定）
+└─ build.cmd             一键构建 + 发布
+```
+
+`ScreenTime.Core` 刻意不引用 WinUI / WindowsAppSDK —— 这样测试不需要拉起 XAML 运行时，
+也不需要 Visual Studio 的打包任务，`dotnet test` 在任何装了 .NET 8 SDK 的机器上都能跑。
 
 ## 命令行参数
 
@@ -66,14 +84,18 @@ ScreenTime.exe --db=%TEMP%\st-demo\demo.db               :: 用演示库启动�
 ## 代码结构
 
 ```
-ScreenTime.WinUI/
-├─ App.xaml.cs            启动、单实例、托盘、命令行
-├─ MainWindow.xaml        导航骨架（Mica + 自定义标题栏）
-├─ Native/                Win32 / Core Audio / 会话状态 / UIAutomation 封装
-├─ Data/Database.cs       全部 SQL 与迁移
-├─ Services/              采集、分类、用途、统计、图标、自启、浏览器历史回填
-├─ Pages/                 今日 / 历史 / 报告 / 应用 / 网页 / 收件箱 / 设置
-└─ UI/                    环形图、图例、命令等自绘组件
+ScreenTime.Core/            纯逻辑，无 UI 依赖
+├─ Data/Database.cs         全部 SQL 与迁移
+└─ Services/                分类、统计口径、用途推断、显示名清洗、浏览器标题
+
+ScreenTime.WinUI/           WinUI 3 界面与采集
+├─ Program.cs               入口（单实例检查在 WinUI 初始化之前）
+├─ App.xaml.cs              启动、托盘、命令行
+├─ MainWindow.xaml          导航骨架（Mica + 自定义标题栏）
+├─ Native/                  Win32 / Core Audio / 会话状态 / UIAutomation / 显示器电源
+├─ Services/                采集、图标、自启、浏览器历史回填、UWP 枚举
+├─ Pages/                   今日 / 历史 / 报告 / 应用 / 网页 / 收件箱 / 设置
+└─ UI/                      环形图、图例、命令等自绘组件
 ```
 
 ### 采集机制
@@ -86,6 +108,25 @@ ScreenTime.WinUI/
   （只读、跳过邮件与网银域名）。
 - **碎片治理**：标题在片段前 3 秒内连跳时只就地更新、不切分；每 5 分钟把最近 2 小时里
   被切碎的短片段并回相邻同应用片段。
+
+## 测试
+
+```bat
+dotnet test ScreenTime.sln -c Release
+```
+
+114 个用例，覆盖 `ScreenTime.Core` 的纯逻辑：
+
+- **统计口径**（`StatsService`）：区间并集（重叠 / 嵌套 / 相邻 / 乱序 / 倒序 / 空）、
+  时长格式化（0、秒级、分钟级、小时级、NaN、Infinity、超大值）
+- **分类规则**（`CategoryService`）：空值、大小写、`.exe` 后缀、关键字层、路径层、厂商兜底、
+  100 万字符超长输入
+- **文本规则**：显示名清洗（通用 ProductName、位数后缀）、外壳/瞬时窗口判断、
+  浏览器标题清洗、用途解析
+- **数据层**（`Database`）：应用去重、区间裁剪、碎片合并、亮屏事件配对、
+  CSV 转义（逗号/引号/换行）、忽略应用排除
+
+测试只引用 `ScreenTime.Core`，不依赖 WinUI 运行时。
 
 ## 已知限制
 

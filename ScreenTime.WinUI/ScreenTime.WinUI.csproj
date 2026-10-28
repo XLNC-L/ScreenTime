@@ -26,10 +26,14 @@
 
   <ItemGroup>
     <PackageReference Include="Microsoft.WindowsAppSDK" Version="1.6.250108002" />
-    <PackageReference Include="Microsoft.Data.Sqlite" Version="8.0.11" />
     <PackageReference Include="Microsoft.Win32.SystemEvents" Version="9.0.1" />
     <PackageReference Include="H.NotifyIcon.WinUI" Version="2.3.2" />
     <PackageReference Include="CommunityToolkit.WinUI.Controls.SettingsControls" Version="8.2.251219" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- 纯逻辑层（数据访问 / 分类 / 统计 / 用途），不依赖 WinUI，便于单元测试 -->
+    <ProjectReference Include="..\ScreenTime.Core\ScreenTime.Core.csproj" />
   </ItemGroup>
 
   <ItemGroup>

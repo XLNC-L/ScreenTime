@@ -5,6 +5,15 @@ ScreenTime-WinUI/
 ScreenTime.WinUI/bin/
 ScreenTime.WinUI/obj/
 
+# 测试产物
+TestResults/
+*.trx
+*.coverage
+
+# 本地配置 / 密钥（当前项目不读 .env，保留以防将来引入）
+.env
+.env.*
+
 # 压缩包
 *.zip
 

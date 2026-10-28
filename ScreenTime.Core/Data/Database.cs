@@ -1259,7 +1259,7 @@ public sealed class Database
             if (!map.TryGetValue(row.AppId, out var src)) continue;
             var effective = ResolveEffectiveAppId(map, row.AppId);
             if (src.Ignored != 0 || map[effective].Ignored != 0) continue;
-            if (!BrowserTabService.IsBrowser(map[effective].ProcessName)) continue;
+            if (!BrowserCatalog.IsBrowser(map[effective].ProcessName)) continue;
 
             var key = (effective, row.Site, row.Title, row.Url);
             merged.TryGetValue(key, out var sec);

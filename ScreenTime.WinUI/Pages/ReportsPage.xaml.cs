@@ -60,7 +60,20 @@ public partial class ReportsPage : Page
         }
     }
 
+    /// <summary>报表涉及多次查询，任一失败都不该让整页崩掉——出问题就把原因显示在页面上。</summary>
     private void LoadReport()
+    {
+        try
+        {
+            LoadReportCore();
+        }
+        catch (Exception ex)
+        {
+            RangeLabel.Text = $"统计加载失败：{ex.Message}";
+        }
+    }
+
+    private void LoadReportCore()
     {
         var (from, to, prevFrom, prevTo, label) = GetRange();
         RangeLabel.Text = label;
