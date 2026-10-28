@@ -82,8 +82,12 @@ public:
 
     // ---- 资源工厂（初始化时调用，不在渲染循环里分配）----
 
-    // 文字格式：优先 Segoe UI Variable（Win11），失败回退 Segoe UI；默认水平/垂直居中
-    CComPtr<IDWriteTextFormat> MakeTextFormat(FLOAT sizePx, DWRITE_FONT_WEIGHT weight = DWRITE_FONT_WEIGHT_REGULAR)
+    // 文字格式：优先 Segoe UI Variable（Win11），失败回退 Segoe UI；
+    // 默认水平居中，列表类文本可传 LEADING/TRAILING
+    CComPtr<IDWriteTextFormat> MakeTextFormat(
+        FLOAT sizePx,
+        DWRITE_FONT_WEIGHT weight = DWRITE_FONT_WEIGHT_REGULAR,
+        DWRITE_TEXT_ALIGNMENT align = DWRITE_TEXT_ALIGNMENT_CENTER)
     {
         CComPtr<IDWriteTextFormat> fmt;
         HRESULT hr = m_dwFactory->CreateTextFormat(L"Segoe UI Variable Text", nullptr, weight,
@@ -95,7 +99,7 @@ public:
                                           sizePx, L"zh-CN", &fmt);
         if (fmt)
         {
-            fmt->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+            fmt->SetTextAlignment(align);
             fmt->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
         }
         return fmt;

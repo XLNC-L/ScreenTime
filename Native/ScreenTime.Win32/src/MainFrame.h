@@ -10,6 +10,8 @@
 #include "TrayIcon.h"
 #include "D2DContext.h"
 #include "DonutChart.h"
+#include "Timeline.h"
+#include "RankList.h"
 
 class MainFrame : public CWindowImpl<MainFrame>
 {
@@ -81,6 +83,27 @@ public:
         segs.push_back({ 9.f,  Palette::Slate(),  L"其他" });
         m_donut.SetSegments(std::move(segs));
         m_donut.SetEmpty(false);
+
+        // 时间线演示时段（合计 120 分钟，与环形图一致；分钟 0-1440）
+        std::vector<Timeline::TimeSlot> slots;
+        slots.push_back({ 550.f, 576.f, Palette::Teal(),   L"Microsoft Edge" });
+        slots.push_back({ 600.f, 632.f, Palette::Violet(), L"WeChat" });
+        slots.push_back({ 750.f, 762.f, Palette::Pink(),   L"IDM" });
+        slots.push_back({ 860.f, 881.f, Palette::Amber(),  L"Doubao" });
+        slots.push_back({ 1140.f, 1149.f, Palette::Slate(), L"其他" });
+        slots.push_back({ 1205.f, 1225.f, Palette::Teal(), L"Microsoft Edge" });
+        m_timeline.SetSlots(std::move(slots));
+        m_timeline.SetEmpty(false);
+
+        // 排行演示数据
+        std::vector<RankList::RankItem> ranks;
+        ranks.push_back({ L"Microsoft Edge", 46.f, Palette::Teal() });
+        ranks.push_back({ L"WeChat", 32.f, Palette::Violet() });
+        ranks.push_back({ L"Doubao", 21.f, Palette::Amber() });
+        ranks.push_back({ L"IDM", 12.f, Palette::Pink() });
+        ranks.push_back({ L"其他", 9.f, Palette::Slate() });
+        m_rank.SetItems(std::move(ranks));
+        m_rank.SetEmpty(false);
         return 0;
     }
 
@@ -123,16 +146,32 @@ public:
             m_d2d.Begin();
             m_d2d.Clear();
 
-            // 环形图占主区域：四周留 24px 网格边距
+            // 三栏布局（8px 网格边距 24px）：
+            //   左栏 = 环形图，右栏上 = 时间线，右栏下 = 排行列表
             RECT rc;
             ::GetClientRect(m_hWnd, &rc);
-            const D2D1_RECT_F bounds = {
-                (FLOAT)rc.left + 24.f, (FLOAT)rc.top + 24.f,
-                (FLOAT)rc.right - 24.f, (FLOAT)rc.bottom - 24.f
-            };
+            const FLOAT L = (FLOAT)rc.left + 24.f;
+            const FLOAT T = (FLOAT)rc.top + 24.f;
+            const FLOAT R = (FLOAT)rc.right - 24.f;
+            const FLOAT B = (FLOAT)rc.bottom - 24.f;
 
-            m_donut.CalculateLayout(bounds);
+            const FLOAT leftW = (R - L) * 0.40f;    // 左栏宽
+            const FLOAT rightX = L + leftW + 24.f;  // 右栏起点
+            const FLOAT timeH = (B - T) * 0.52f;    // 时间线区高
+
+            const D2D1_RECT_F donutBounds = { L, T, L + leftW, B };
+            const D2D1_RECT_F timelineBounds = { rightX, T, R, T + timeH };
+            const D2D1_RECT_F rankBounds = { rightX, T + timeH + 24.f, R, B };
+
+            m_donut.CalculateLayout(donutBounds);
             m_donut.Render(m_d2d);
+
+            m_timeline.CalculateLayout(timelineBounds);
+            m_timeline.Render(m_d2d);
+
+            m_rank.CalculateLayout(rankBounds);
+            m_rank.Render(m_d2d);
+
             m_d2d.End();
         }
         else
@@ -155,6 +194,8 @@ private:
     TrayIcon m_tray;
     D2DContext m_d2d;
     DonutChart m_donut;
+    Timeline m_timeline;
+    RankList m_rank;
 
     // Win11 22000+：主窗口 Mica 背景 + 跟随深色
     void ApplyMica()
