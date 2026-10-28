@@ -43,12 +43,24 @@ public partial class TodayPage : Page
         var apps = _db.QueryAppUsage(from, to);
         var segments = _db.QuerySegments(from, to);
         var totalSec = StatsService.UnionSeconds(segments.Select(s => (s.Start, s.End)).ToList());
-        var fgSec = apps.Sum(a => a.ForegroundSeconds);
-        var audioSec = apps.Sum(a => a.AudioSeconds);
 
-        TotalText.Text = StatsService.FormatDuration(totalSec);
-        FgText.Text = StatsService.FormatDuration(fgSec);
-        AudioText.Text = StatsService.FormatDuration(audioSec);
+        // 前台用并集而不是各应用时长相加：两者通常相等，但万一有重叠片段，
+        // 相加会多算，导致下面算出来的后台时长被压低。
+        var fgSec = StatsService.UnionSeconds(
+            segments.Where(s => s.Kind == "foreground").Select(s => (s.Start, s.End)).ToList());
+
+        // 后台播放 = 总时长里「不属于前台」的那一段。
+        // 不能直接取音频总时长：在前台用着某个应用时它同时出声，
+        // 这段既算前台又算音频，两者相加会比总时长多出一截
+        //（实测某天多出 19 分钟，界面上三个数字加起来对不上）。
+        // 按整数秒算差值，保证三个数字显示出来也能严格相加。
+        var totalInt = (long)Math.Floor(totalSec);
+        var fgInt = (long)Math.Floor(fgSec);
+        var bgInt = Math.Max(0, totalInt - fgInt);
+
+        TotalText.Text = StatsService.FormatDurationExact(totalInt);
+        FgText.Text = StatsService.FormatDurationExact(fgInt);
+        AudioText.Text = StatsService.FormatDurationExact(bgInt);
 
         var lastBoot = _db.GetLastBootTime();
         BootText.Text = lastBoot != null

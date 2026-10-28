@@ -14,6 +14,22 @@ public static class StatsService
         return $"{t.Seconds} 秒";
     }
 
+    /// <summary>
+    /// 精确到秒的时长，用于「总时长 / 前台 / 后台」这类需要相加对得上的地方。
+    /// <see cref="FormatDuration"/> 超过 1 小时会丢掉秒，三个数字相加就会出现几十秒的差。
+    /// 向下取整（不是四舍五入）：调用方按整数秒算好差值，才能保证 a + b 恰好等于总数。
+    /// </summary>
+    public static string FormatDurationExact(double seconds)
+    {
+        if (seconds < 1) return "0 秒";
+        var t = TimeSpan.FromSeconds(Math.Floor(seconds));
+        if (t.TotalHours >= 1)
+            return $"{(int)t.TotalHours} 小时 {t.Minutes} 分 {t.Seconds} 秒";
+        if (t.TotalMinutes >= 1)
+            return $"{t.Minutes} 分 {t.Seconds} 秒";
+        return $"{t.Seconds} 秒";
+    }
+
     public static string FormatHours(double seconds)
     {
         var h = seconds / 3600.0;

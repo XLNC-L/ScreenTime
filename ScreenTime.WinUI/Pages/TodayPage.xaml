@@ -56,7 +56,8 @@
                     Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
                     BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
                     BorderThickness="1"
-                    CornerRadius="8">
+                    CornerRadius="8"
+                    ToolTipService.ToolTip="前台时长 + 后台播放 = 今日总时长。&#x0a;后台播放只统计「没有前台应用、但有声音」的时间，&#x0a;在前台应用里同时出声的那部分已经算在前台里了，不重复计。">
                     <StackPanel Spacing="4">
                         <TextBlock Style="{StaticResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" Text="后台播放" />
                         <TextBlock x:Name="AudioText" Style="{StaticResource TitleTextBlockStyle}" />
