@@ -1,0 +1,26 @@
+# 构建产物
+bin/
+obj/
+ScreenTime-WinUI/
+ScreenTime.WinUI/bin/
+ScreenTime.WinUI/obj/
+
+# 压缩包
+*.zip
+
+# Visual Studio / Rider
+.vs/
+.idea/
+*.user
+*.suo
+
+# 运行期数据（不该进版本库）
+*.db
+*.db-wal
+*.db-shm
+*.log
+screentime.location
+
+# 系统
+Thumbs.db
+desktop.ini

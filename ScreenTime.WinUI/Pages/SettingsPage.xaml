@@ -1,0 +1,154 @@
+<Page
+    x:Class="ScreenTime.Pages.SettingsPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:settings="using:CommunityToolkit.WinUI.Controls">
+
+    <ScrollViewer>
+        <StackPanel Margin="32,24,32,32" Spacing="24" MaxWidth="880" HorizontalAlignment="Left">
+
+            <TextBlock Style="{StaticResource TitleTextBlockStyle}" Text="设置" />
+
+            <InfoBar
+                x:Name="Feedback"
+                IsOpen="False"
+                IsClosable="True"
+                Title="提示" />
+
+            <!-- 常规 -->
+            <StackPanel Spacing="12">
+                <TextBlock Style="{StaticResource SubtitleTextBlockStyle}" Text="常规" />
+                <Border
+                    Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                    BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                    BorderThickness="1"
+                    CornerRadius="8">
+                    <StackPanel Padding="0">
+                        <settings:SettingsCard Header="开机自启" Description="通过任务计划程序在登录时启动，可记录管理员窗口且不弹 UAC">
+                            <ToggleSwitch x:Name="AutoStartSwitch" OnContent="开" OffContent="关" Toggled="AutoStartSwitch_Toggled" />
+                        </settings:SettingsCard>
+                        <settings:SettingsCard Header="音频计数" Description="应用播放声音时统计（前台后台都计，暂停即停）">
+                            <ToggleSwitch x:Name="AudioSwitch" OnContent="开" OffContent="关" Toggled="AudioSwitch_Toggled" />
+                        </settings:SettingsCard>
+                        <settings:SettingsCard Header="灰区用途询问" Description="浏览器、微信等可用于多种用途的应用，开始使用时弹出用途标注（仅本次会话）">
+                            <ToggleSwitch x:Name="PurposeAskSwitch" OnContent="开" OffContent="关" Toggled="PurposeAskSwitch_Toggled" />
+                        </settings:SettingsCard>
+                        <settings:SettingsCard Header="浏览器标签页统计" Description="Chrome/Edge 精确到当前标签页的网站并按网站归类用途（Firefox 暂不支持）">
+                            <ToggleSwitch x:Name="BrowserTabSwitch" OnContent="开" OffContent="关" Toggled="BrowserTabSwitch_Toggled" />
+                        </settings:SettingsCard>
+                        <settings:SettingsCard Header="网页地址回填" Description="从 Chrome/Edge 本地历史库为未读到地址的浏览器片段补全网页地址；仅本机只读、不上传，邮件/网银等敏感域名会跳过">
+                            <ToggleSwitch x:Name="HistoryBackfillSwitch" OnContent="开" OffContent="关" Toggled="HistoryBackfillSwitch_Toggled" />
+                        </settings:SettingsCard>
+                    </StackPanel>
+                </Border>
+            </StackPanel>
+
+            <!-- 判定 -->
+            <StackPanel Spacing="12">
+                <TextBlock Style="{StaticResource SubtitleTextBlockStyle}" Text="判定" />
+                <Border
+                    Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                    BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                    BorderThickness="1"
+                    CornerRadius="8">
+                    <StackPanel>
+                        <settings:SettingsCard Header="无操作时长" Description="超过该时长无键鼠输入则停止前台计时">
+                            <ComboBox x:Name="IdleBox" Width="160" SelectionChanged="IdleBox_SelectionChanged">
+                                <ComboBoxItem Tag="60" Content="1 分钟" />
+                                <ComboBoxItem Tag="120" Content="2 分钟" />
+                                <ComboBoxItem Tag="180" Content="3 分钟" />
+                                <ComboBoxItem Tag="300" Content="5 分钟" />
+                                <ComboBoxItem Tag="600" Content="10 分钟" />
+                            </ComboBox>
+                        </settings:SettingsCard>
+                        <settings:SettingsCard Header="窗口标题保留" Description="到期后清空窗口标题明细，保留时长统计">
+                            <ComboBox x:Name="RetentionBox" Width="160" SelectionChanged="RetentionBox_SelectionChanged">
+                                <ComboBoxItem Tag="7" Content="7 天" />
+                                <ComboBoxItem Tag="30" Content="30 天" />
+                                <ComboBoxItem Tag="90" Content="90 天" />
+                                <ComboBoxItem Tag="0" Content="永久" />
+                            </ComboBox>
+                        </settings:SettingsCard>
+                    </StackPanel>
+                </Border>
+            </StackPanel>
+
+            <!-- 数据 -->
+            <StackPanel Spacing="12">
+                <TextBlock Style="{StaticResource SubtitleTextBlockStyle}" Text="数据" />
+                <Border
+                    Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                    BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                    BorderThickness="1"
+                    CornerRadius="8">
+                    <StackPanel>
+                        <settings:SettingsCard Header="数据位置" Description="数据库文件所在文件夹，更改后立即迁移并重启采集">
+                            <StackPanel Orientation="Horizontal" Spacing="8">
+                                <Button Click="ChangeLocationBtn_Click">
+                                    <StackPanel Orientation="Horizontal">
+                                        <FontIcon FontSize="12" Glyph="&#xE8DA;" />
+                                        <TextBlock Margin="8,0,0,0" Text="更改位置" />
+                                    </StackPanel>
+                                </Button>
+                                <Button Click="OpenFolderBtn_Click">
+                                    <StackPanel Orientation="Horizontal">
+                                        <FontIcon FontSize="12" Glyph="&#xE838;" />
+                                        <TextBlock Margin="8,0,0,0" Text="打开文件夹" />
+                                    </StackPanel>
+                                </Button>
+                            </StackPanel>
+                        </settings:SettingsCard>
+                        <settings:SettingsCard Header="导出与备份" Description="导出全部时长明细为 CSV（Excel 可直接打开）或 JSON（便于脚本处理），也可复制一份数据库备份">
+                            <StackPanel Orientation="Horizontal" Spacing="8">
+                                <Button Click="ExportCsvBtn_Click">
+                                    <StackPanel Orientation="Horizontal">
+                                        <FontIcon FontSize="12" Glyph="&#xE8B5;" />
+                                        <TextBlock Margin="8,0,0,0" Text="导出 CSV" />
+                                    </StackPanel>
+                                </Button>
+                                <Button Click="ExportJsonBtn_Click">
+                                    <StackPanel Orientation="Horizontal">
+                                        <FontIcon FontSize="12" Glyph="&#xE943;" />
+                                        <TextBlock Margin="8,0,0,0" Text="导出 JSON" />
+                                    </StackPanel>
+                                </Button>
+                                <Button Click="BackupBtn_Click">
+                                    <StackPanel Orientation="Horizontal">
+                                        <FontIcon FontSize="12" Glyph="&#xE753;" />
+                                        <TextBlock Margin="8,0,0,0" Text="备份数据库" />
+                                    </StackPanel>
+                                </Button>
+                            </StackPanel>
+                        </settings:SettingsCard>
+                        <settings:SettingsCard Header="清除全部数据" Description="清除全部时长记录，保留应用分类与设置，此操作不可恢复">
+                            <Button Click="ClearBtn_Click">
+                                <StackPanel Orientation="Horizontal">
+                                    <FontIcon FontSize="12" Glyph="&#xE74D;" />
+                                    <TextBlock Margin="8,0,0,0" Text="清除" />
+                                </StackPanel>
+                            </Button>
+                        </settings:SettingsCard>
+                    </StackPanel>
+                </Border>
+                <TextBlock x:Name="DbPathText" Style="{StaticResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextWrapping="Wrap" />
+            </StackPanel>
+
+            <!-- 关于 -->
+            <StackPanel Spacing="12">
+                <TextBlock Style="{StaticResource SubtitleTextBlockStyle}" Text="关于" />
+                <Border
+                    Padding="16"
+                    Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                    BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                    BorderThickness="1"
+                    CornerRadius="8">
+                    <StackPanel Spacing="4">
+                        <TextBlock Style="{StaticResource BodyStrongTextBlockStyle}" Text="ScreenTime 1.0.0" />
+                        <TextBlock Foreground="{ThemeResource TextFillColorSecondaryBrush}" Text="轻量电脑使用时长统计 · 仅本地记录，不联网、不打扰" />
+                    </StackPanel>
+                </Border>
+            </StackPanel>
+
+        </StackPanel>
+    </ScrollViewer>
+</Page>

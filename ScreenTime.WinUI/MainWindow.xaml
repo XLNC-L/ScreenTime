@@ -1,0 +1,116 @@
+<Window
+    x:Class="ScreenTime.MainWindow"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    Title="ScreenTime">
+
+    <!-- 托盘图标已移至独立的 TrayService（代码创建），静默启动时无需创建主窗口 -->
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="40" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+
+        <!-- 自定义标题栏（拖拽区） -->
+        <Grid x:Name="AppTitleBar" Grid.Row="0">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="*" />
+            </Grid.ColumnDefinitions>
+            <StackPanel Orientation="Horizontal" Margin="16,0,0,0">
+                <FontIcon FontSize="16" Glyph="&#xE823;" VerticalAlignment="Center" />
+                <TextBlock
+                    Margin="12,0,0,0"
+                    VerticalAlignment="Center"
+                    FontSize="12"
+                    Text="ScreenTime" />
+            </StackPanel>
+        </Grid>
+
+        <NavigationView
+            x:Name="Nav"
+            Grid.Row="1"
+            IsBackButtonVisible="Collapsed"
+            IsSettingsVisible="False"
+            OpenPaneLength="200"
+            PaneDisplayMode="Left"
+            SelectionChanged="Nav_SelectionChanged">
+            <NavigationView.MenuItems>
+                <NavigationViewItem Tag="today">
+                    <NavigationViewItem.Icon>
+                        <FontIcon Glyph="&#xE80F;" />
+                    </NavigationViewItem.Icon>
+                    <TextBlock Text="今日" />
+                </NavigationViewItem>
+                <NavigationViewItem Tag="history">
+                    <NavigationViewItem.Icon>
+                        <FontIcon Glyph="&#xE787;" />
+                    </NavigationViewItem.Icon>
+                    <TextBlock Text="历史" />
+                </NavigationViewItem>
+                <NavigationViewItem Tag="reports">
+                    <NavigationViewItem.Icon>
+                        <FontIcon Glyph="&#xE9F9;" />
+                    </NavigationViewItem.Icon>
+                    <TextBlock Text="报告" />
+                </NavigationViewItem>
+                <NavigationViewItem Tag="apps">
+                    <NavigationViewItem.Icon>
+                        <FontIcon Glyph="&#xE71D;" />
+                    </NavigationViewItem.Icon>
+                    <TextBlock Text="应用" />
+                </NavigationViewItem>
+                <NavigationViewItem Tag="web">
+                    <NavigationViewItem.Icon>
+                        <FontIcon Glyph="&#xE774;" />
+                    </NavigationViewItem.Icon>
+                    <TextBlock Text="网页" />
+                </NavigationViewItem>
+                <NavigationViewItem Tag="inbox">
+                    <NavigationViewItem.Icon>
+                        <FontIcon Glyph="&#xE89C;" />
+                    </NavigationViewItem.Icon>
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Grid.Column="0" Text="收件箱" VerticalAlignment="Center" />
+                        <InfoBadge
+                            x:Name="InboxBadge"
+                            Grid.Column="1"
+                            Margin="8,0,0,0"
+                            VerticalAlignment="Center"
+                            Visibility="Collapsed" />
+                    </Grid>
+                </NavigationViewItem>
+                <NavigationViewItem Tag="settings">
+                    <NavigationViewItem.Icon>
+                        <FontIcon Glyph="&#xE713;" />
+                    </NavigationViewItem.Icon>
+                    <TextBlock Text="设置" />
+                </NavigationViewItem>
+            </NavigationView.MenuItems>
+
+            <Frame x:Name="ContentFrame" />
+        </NavigationView>
+
+        <!-- 灰区应用用途标注（非模态，可忽略） -->
+        <TeachingTip
+            x:Name="PurposeTip"
+            Title="这次使用是？"
+            Subtitle="选择用途，仅用于本次会话"
+            PreferredPlacement="Auto"
+            ActionButtonContent="确定"
+            CloseButtonContent="取消"
+            ActionButtonClick="PurposeTip_Confirm"
+            CloseButtonClick="PurposeTip_Cancel">
+            <RadioButtons x:Name="PurposeRadio" MaxColumns="1" SelectedIndex="0">
+                <RadioButton Content="工作学习" />
+                <RadioButton Content="生活事务" />
+                <RadioButton Content="消遣娱乐" />
+                <RadioButton Content="社交通讯" />
+            </RadioButtons>
+        </TeachingTip>
+    </Grid>
+</Window>

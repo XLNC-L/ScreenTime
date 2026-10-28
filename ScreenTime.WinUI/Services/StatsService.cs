@@ -1,0 +1,79 @@
+namespace ScreenTime.Services;
+
+/// <summary>统计辅助：时长格式化、区间并集、日期范围。</summary>
+public static class StatsService
+{
+    public static string FormatDuration(double seconds)
+    {
+        if (seconds < 1) return "0 秒";
+        var t = TimeSpan.FromSeconds(seconds);
+        if (t.TotalHours >= 1)
+            return $"{(int)t.TotalHours} 小时 {t.Minutes} 分";
+        if (t.TotalMinutes >= 1)
+            return $"{t.Minutes} 分 {t.Seconds} 秒";
+        return $"{t.Seconds} 秒";
+    }
+
+    public static string FormatHours(double seconds)
+    {
+        var h = seconds / 3600.0;
+        return h >= 10 ? $"{h:0.0}" : $"{h:0.00}";
+    }
+
+    /// <summary>多个时间区间的并集秒数（重叠不重复计算）。</summary>
+    public static double UnionSeconds(IList<(DateTime Start, DateTime End)> intervals)
+    {
+        if (intervals.Count == 0) return 0;
+        var sorted = intervals.OrderBy(i => i.Start).ToList();
+        double total = 0;
+        var curStart = sorted[0].Start;
+        var curEnd = sorted[0].End;
+        foreach (var (s, e) in sorted.Skip(1))
+        {
+            if (s <= curEnd)
+            {
+                if (e > curEnd) curEnd = e;
+            }
+            else
+            {
+                total += (curEnd - curStart).TotalSeconds;
+                curStart = s;
+                curEnd = e;
+            }
+        }
+        total += (curEnd - curStart).TotalSeconds;
+        return total;
+    }
+
+    /// <summary>本地日期对应的 UTC 范围。</summary>
+    public static (DateTime From, DateTime To) DayRange(DateTime localDay)
+    {
+        var start = localDay.Date;
+        return (start.ToUniversalTime(), start.AddDays(1).ToUniversalTime());
+    }
+
+    /// <summary>自然周（周一为起点）。</summary>
+    public static (DateTime From, DateTime To) WeekRange(DateTime localDate)
+    {
+        var d = localDate.Date;
+        var delta = (d.DayOfWeek == DayOfWeek.Sunday ? 6 : (int)d.DayOfWeek - 1);
+        var monday = d.AddDays(-delta);
+        return (monday.ToUniversalTime(), monday.AddDays(7).ToUniversalTime());
+    }
+
+    /// <summary>自然月。</summary>
+    public static (DateTime From, DateTime To) MonthRange(DateTime localDate)
+    {
+        var first = new DateTime(localDate.Year, localDate.Month, 1);
+        return (first.ToUniversalTime(), first.AddMonths(1).ToUniversalTime());
+    }
+
+    /// <summary>范围内每一天的本地日期。</summary>
+    public static IEnumerable<DateTime> EachDay(DateTime fromUtc, DateTime toUtc)
+    {
+        var f = fromUtc.ToLocalTime().Date;
+        var t = toUtc.ToLocalTime().Date;
+        for (var d = f; d < t; d = d.AddDays(1))
+            yield return d;
+    }
+}

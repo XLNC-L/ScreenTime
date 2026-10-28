@@ -1,0 +1,218 @@
+using System.IO;
+using System.IO.Pipes;
+using System.Threading;
+using Microsoft.UI.Dispatching;
+using Microsoft.UI.Xaml;
+using ScreenTime.Data;
+using ScreenTime.Services;
+using ScreenTime.Themes;
+
+namespace ScreenTime;
+
+public partial class App : Application
+{
+    private const string MutexName = "ScreenTime_SingleInstance_Mutex";
+
+    /// <summary>已运行实例的唤起通道：第二个实例连上来就说明用户想打开主窗口。</summary>
+    private const string ActivatePipeName = "ScreenTime_Activate";
+
+    private static Mutex? _mutex;
+    private MainWindow? _mainWindow;
+    private TrayService? _tray;
+    private DispatcherQueue? _uiQueue;
+
+    public Database Database { get; private set; } = null!;
+    public WatcherService Watcher { get; private set; } = null!;
+    public HistoryImportService HistoryImport { get; private set; } = null!;
+
+    public static new App Current => (App)Application.Current;
+
+    public App()
+    {
+        UnhandledException += OnUnhandledException;
+        AppDomain.CurrentDomain.UnhandledException += (_, ev) => WriteError(ev.ExceptionObject);
+
+        bool createdNew;
+        _mutex = new Mutex(true, MutexName, out createdNew);
+        if (!createdNew)
+        {
+            // 已经有实例在跑：让那个实例把窗口亮出来，而不是毫无反应地退出。
+            // 托盘应用从开始菜单/桌面再点一次图标时，用户期待的就是"打开界面"。
+            SignalExistingInstance();
+            Environment.Exit(0);
+            return;
+        }
+
+        InitializeComponent();
+
+        // 主题：跟随系统
+        CategoryPalette.CurrentTheme = RequestedTheme == ApplicationTheme.Light
+            ? ElementTheme.Light
+            : ElementTheme.Dark;
+
+        Database = new Database(CommandLineValue("--db="));
+        Database.Init();
+        Database.Migrate();
+        Watcher = new WatcherService(Database);
+        HistoryImport = new HistoryImportService(Database);
+    }
+
+    /// <summary>读取 <c>--key=value</c> 形式的命令行参数（未提供返回 null）。</summary>
+    private static string? CommandLineValue(string prefix)
+    {
+        var arg = Environment.GetCommandLineArgs()
+            .FirstOrDefault(a => a.StartsWith(prefix, StringComparison.OrdinalIgnoreCase));
+        return arg?[prefix.Length..];
+    }
+
+    private static bool HasFlag(string flag) =>
+        Environment.GetCommandLineArgs().Any(a => a.Equals(flag, StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>通知已运行实例显示主窗口（命名管道，失败即忽略）。</summary>
+    private static void SignalExistingInstance()
+    {
+        try
+        {
+            using var client = new NamedPipeClientStream(".", ActivatePipeName, PipeDirection.Out);
+            client.Connect(1000);
+            client.WriteByte(1);
+            client.Flush();
+        }
+        catch
+        {
+            // 旧实例没在监听：直接退出即可
+        }
+    }
+
+    /// <summary>后台监听唤起请求；每次连接后重建管道，等待下一次。</summary>
+    private void StartActivationListener()
+    {
+        System.Threading.Tasks.Task.Run(() =>
+        {
+            while (true)
+            {
+                try
+                {
+                    using var server = new NamedPipeServerStream(ActivatePipeName, PipeDirection.In,
+                        1, PipeTransmissionMode.Byte, PipeOptions.None);
+                    server.WaitForConnection();
+                    try { server.ReadByte(); } catch { }
+                    _uiQueue?.TryEnqueue(ShowMainWindow);
+                }
+                catch
+                {
+                    // 管道被占用或实例正在退出：稍等再试，避免空转
+                    Thread.Sleep(1000);
+                }
+            }
+        });
+    }
+
+    protected override void OnLaunched(LaunchActivatedEventArgs args)
+    {
+        _uiQueue = DispatcherQueue.GetForCurrentThread();
+
+        // 演示数据：只允许配合 --db 使用，杜绝写进真实数据库。
+        // 生成完直接退出，方便脚本化验证；之后用同一个 --db 参数启动即可查看。
+        if (HasFlag("--seed-demo"))
+        {
+            if (!Database.IsOverrideLocation)
+            {
+                WriteError("--seed-demo 必须同时指定 --db=<路径>，已忽略（保护真实数据）。");
+            }
+            else
+            {
+                try
+                {
+                    var started = DateTime.Now;
+                    var seeded = DemoSeeder.Seed(Database, 90);
+                    DemoSeeder.WriteLog(Database,
+                        $"{started:yyyy-MM-dd HH:mm:ss} 写入 {seeded} 条演示数据，耗时 {(DateTime.Now - started).TotalSeconds:0.0}s -> {Database.DbPath}");
+                }
+                catch (Exception ex)
+                {
+                    WriteError(ex);
+                }
+                Environment.Exit(0);
+                return;
+            }
+        }
+
+        Watcher.Start();
+        HistoryImport.Start();
+        StartActivationListener();
+
+        // 注意：WinUI 3 桌面应用的 LaunchActivatedEventArgs.Arguments 不包含命令行，
+        // 必须用 Environment.GetCommandLineArgs() 读取静默参数。
+        var cmdLine = Environment.GetCommandLineArgs();
+
+        // 托盘独立于主窗口，始终创建
+        _tray = new TrayService();
+
+        bool silent = cmdLine.Any(a => a.Equals("--silent", StringComparison.OrdinalIgnoreCase));
+        if (!silent)
+        {
+            _mainWindow = new MainWindow();
+            _mainWindow.Activate();
+        }
+        // 静默启动：不创建主窗口，避免隐藏窗口占据前台、干扰真实应用统计
+    }
+
+    /// <summary>主窗口句柄（供文件/文件夹选择器初始化）。</summary>
+    public nint MainWindowHandle
+    {
+        get
+        {
+            if (_mainWindow == null) ShowMainWindow();
+            return WinRT.Interop.WindowNative.GetWindowHandle(_mainWindow!);
+        }
+    }
+
+    public void ShowMainWindow()
+    {
+        if (_mainWindow == null)
+        {
+            _mainWindow = new MainWindow();
+            _mainWindow.Activate();
+        }
+        else
+        {
+            _mainWindow.ShowAndActivate();
+        }
+    }
+
+    /// <summary>下钻到应用页并按分类筛选（转发到主窗口）。</summary>
+    public void DrillToCategory(string category)
+    {
+        if (_mainWindow == null) ShowMainWindow();
+        _mainWindow?.DrillToCategory(category);
+    }
+
+    /// <summary>刷新收件箱导航徽标。</summary>
+    public void RefreshInboxBadge() => _mainWindow?.RefreshInboxBadge();
+
+    public void ExitApp()
+    {
+        try { Watcher.Dispose(); } catch { }
+        try { HistoryImport.Dispose(); } catch { }
+        try { _tray?.Dispose(); } catch { }
+        Exit();
+    }
+
+    private void OnUnhandledException(object sender, Microsoft.UI.Xaml.UnhandledExceptionEventArgs e)
+    {
+        WriteError(e.Exception);
+        e.Handled = true;
+    }
+
+    private static void WriteError(object? ex)
+    {
+        try
+        {
+            var path = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+                "ScreenTime", "error.log");
+            File.AppendAllText(path, $"{DateTime.Now}\n{ex}\n\n");
+        }
+        catch { }
+    }
+}

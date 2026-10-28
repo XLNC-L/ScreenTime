@@ -1,0 +1,98 @@
+<Page
+    x:Class="ScreenTime.Pages.InboxPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+    <Grid Margin="32,24,32,32">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+
+        <TextBlock Grid.Row="0" Style="{StaticResource TitleTextBlockStyle}" Text="收件箱" />
+        <TextBlock
+            Grid.Row="1"
+            Margin="0,8,0,0"
+            Style="{StaticResource BodyTextBlockStyle}"
+            Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+            Text="无法确定分类的新应用会先放在这里，归类后自动消失。可勾选多个应用批量归类。" />
+
+        <!-- 批量归类工具条 -->
+        <StackPanel
+            Grid.Row="2"
+            Margin="0,16,0,0"
+            Orientation="Horizontal"
+            Spacing="8">
+            <ComboBox
+                x:Name="BatchBox"
+                Width="200"
+                Header="批量归类为"
+                SelectionChanged="BatchBox_SelectionChanged" />
+            <Button
+                x:Name="ApplyBatchBtn"
+                VerticalAlignment="Bottom"
+                Click="ApplyBatchBtn_Click"
+                Content="应用到选中（0）"
+                IsEnabled="False" />
+            <Button
+                x:Name="SelectAllBtn"
+                VerticalAlignment="Bottom"
+                Click="SelectAllBtn_Click"
+                Content="全选" />
+        </StackPanel>
+
+        <Border
+            Grid.Row="3"
+            Margin="0,12,0,0"
+            Padding="8"
+            Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+            BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+            BorderThickness="1"
+            CornerRadius="8">
+            <Grid>
+                <ListView
+                    x:Name="InboxList"
+                    SelectionMode="Multiple"
+                    SelectionChanged="InboxList_SelectionChanged">
+                    <ListView.ItemTemplate>
+                        <DataTemplate>
+                            <Grid Margin="0,4" ColumnSpacing="12">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="200" />
+                                </Grid.ColumnDefinitions>
+                                <Image
+                                    Grid.Column="0"
+                                    Width="24"
+                                    Height="24"
+                                    VerticalAlignment="Center"
+                                    Source="{Binding Icon}" />
+                                <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                                    <TextBlock Style="{StaticResource BodyStrongTextBlockStyle}" Text="{Binding Name}" TextTrimming="CharacterEllipsis" />
+                                    <TextBlock Style="{StaticResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" Text="{Binding ProcessName}" TextTrimming="CharacterEllipsis" />
+                                </StackPanel>
+                                <ComboBox
+                                    Grid.Column="2"
+                                    Header="归类为"
+                                    HorizontalAlignment="Stretch"
+                                    ItemsSource="{Binding Categories}"
+                                    SelectedIndex="-1"
+                                    SelectionChanged="CategoryCombo_SelectionChanged"
+                                    Tag="{Binding Id}" />
+                            </Grid>
+                        </DataTemplate>
+                    </ListView.ItemTemplate>
+                </ListView>
+
+                <StackPanel x:Name="EmptyPanel" VerticalAlignment="Center" HorizontalAlignment="Center" Spacing="8">
+                    <FontIcon FontSize="24" Glyph="&#xE930;" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                    <TextBlock Style="{StaticResource BodyStrongTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" Text="收件箱已清空" />
+                    <TextBlock Style="{StaticResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" Text="所有应用都已归类" />
+                </StackPanel>
+            </Grid>
+        </Border>
+    </Grid>
+</Page>

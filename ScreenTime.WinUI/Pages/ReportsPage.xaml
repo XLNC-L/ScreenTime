@@ -1,0 +1,222 @@
+<Page
+    x:Class="ScreenTime.Pages.ReportsPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:ui="using:ScreenTime.UI">
+
+    <ScrollViewer>
+        <StackPanel Margin="32,24,32,32" Spacing="24">
+
+            <TextBlock Style="{StaticResource TitleTextBlockStyle}" Text="报告" />
+
+            <!-- 控制条 -->
+            <Border
+                Padding="16"
+                Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                BorderThickness="1"
+                CornerRadius="8">
+                <Grid ColumnSpacing="12">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <Button x:Name="PrevBtn" Grid.Column="0" Click="PrevBtn_Click" Width="40">
+                        <FontIcon Glyph="&#xE76B;" />
+                    </Button>
+                    <Button x:Name="NextBtn" Grid.Column="1" Click="NextBtn_Click" Width="40">
+                        <FontIcon Glyph="&#xE76C;" />
+                    </Button>
+                    <TextBlock x:Name="RangeLabel" Grid.Column="2" VerticalAlignment="Center" Style="{StaticResource SubtitleTextBlockStyle}" />
+                    <Button x:Name="ModeBtn" Grid.Column="3" Click="ModeBtn_Click">
+                        <TextBlock Text="按月" />
+                    </Button>
+                </Grid>
+            </Border>
+
+            <!-- 概览 -->
+            <Grid ColumnSpacing="12">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+                <Border Grid.Column="0" Padding="16" CornerRadius="8" Background="{ThemeResource CardBackgroundFillColorDefaultBrush}" BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1">
+                    <StackPanel Spacing="4">
+                        <TextBlock Style="{StaticResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" Text="总时长" />
+                        <TextBlock x:Name="TotalText" Style="{StaticResource TitleTextBlockStyle}" />
+                    </StackPanel>
+                </Border>
+                <Border Grid.Column="1" Padding="16" CornerRadius="8" Background="{ThemeResource CardBackgroundFillColorDefaultBrush}" BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1">
+                    <StackPanel Spacing="4">
+                        <TextBlock Style="{StaticResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" Text="日均" />
+                        <TextBlock x:Name="AvgText" Style="{StaticResource TitleTextBlockStyle}" />
+                    </StackPanel>
+                </Border>
+                <Border Grid.Column="2" Padding="16" CornerRadius="8" Background="{ThemeResource CardBackgroundFillColorDefaultBrush}" BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1">
+                    <StackPanel Spacing="4">
+                        <TextBlock Style="{StaticResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" Text="环比" />
+                        <TextBlock x:Name="DeltaText" Style="{StaticResource TitleTextBlockStyle}" />
+                    </StackPanel>
+                </Border>
+            </Grid>
+
+            <!-- 每日柱状 -->
+            <Border
+                Padding="16"
+                Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                BorderThickness="1"
+                CornerRadius="8">
+                <StackPanel Spacing="8">
+                    <TextBlock Style="{StaticResource SubtitleTextBlockStyle}" Text="每日时长" />
+                    <ScrollViewer HorizontalScrollBarVisibility="Auto" HorizontalScrollMode="Enabled">
+                        <ItemsControl x:Name="Bars">
+                            <ItemsControl.ItemsPanel>
+                                <ItemsPanelTemplate>
+                                    <StackPanel Orientation="Horizontal" />
+                                </ItemsPanelTemplate>
+                            </ItemsControl.ItemsPanel>
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <Grid Width="40" Margin="0,0,8,0">
+                                        <Grid.RowDefinitions>
+                                            <!-- 柱高上限 150 + 数值行高 16，留出余量避免数值被裁切 -->
+                                            <RowDefinition Height="184" />
+                                            <RowDefinition Height="Auto" />
+                                        </Grid.RowDefinitions>
+                                        <StackPanel Grid.Row="0" VerticalAlignment="Bottom">
+                                            <TextBlock
+                                                Margin="0,0,0,2"
+                                                HorizontalAlignment="Center"
+                                                Style="{StaticResource CaptionTextBlockStyle}"
+                                                Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                                Text="{Binding Hours}" />
+                                            <Rectangle Height="{Binding BarHeight}" RadiusX="4" RadiusY="4" Fill="{Binding Brush}" ToolTipService.ToolTip="{Binding Tip}" />
+                                        </StackPanel>
+                                        <TextBlock Grid.Row="1" HorizontalAlignment="Center" Style="{StaticResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" Text="{Binding Label}" />
+                                    </Grid>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </ScrollViewer>
+                </StackPanel>
+            </Border>
+
+            <!-- 分类占比 -->
+            <Border
+                Padding="16"
+                Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                BorderThickness="1"
+                CornerRadius="8">
+                <StackPanel Spacing="16">
+                    <TextBlock Style="{StaticResource SubtitleTextBlockStyle}" Text="分类占比" />
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <ui:DonutChart x:Name="Donut" Width="160" Height="160" Grid.Column="0" />
+                        <ItemsControl x:Name="Legend" Grid.Column="1" Margin="16,0,0,0" VerticalAlignment="Center">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <Grid Margin="0,4" Tapped="CategoryLegend_Tapped">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="Auto" />
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="Auto" />
+                                        </Grid.ColumnDefinitions>
+                                        <Rectangle Width="12" Height="12" Grid.Column="0" Fill="{Binding Brush}" />
+                                        <TextBlock Margin="8,0,0,0" Grid.Column="1" Text="{Binding Label}" VerticalAlignment="Center" />
+                                        <TextBlock Grid.Column="2" Foreground="{ThemeResource TextFillColorSecondaryBrush}" Text="{Binding Percent}" VerticalAlignment="Center" />
+                                    </Grid>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </Grid>
+                </StackPanel>
+            </Border>
+
+            <!-- 用途分布 -->
+            <Border
+                Padding="16"
+                Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                BorderThickness="1"
+                CornerRadius="8">
+                <StackPanel Spacing="12">
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Style="{StaticResource SubtitleTextBlockStyle}" Text="用途分布" />
+                        <Button
+                            x:Name="NormalizeBtn"
+                            Grid.Column="1"
+                            Padding="10,4"
+                            Click="NormalizeBtn_Click"
+                            Content="未判定一键归类"
+                            ToolTipService.ToolTip="把未标注用途的历史记录按应用分类一次性归入推荐用途" />
+                    </Grid>
+                    <Grid x:Name="PurposeBar" Height="12" />
+                    <ItemsControl x:Name="PurposeLegend">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <Grid Margin="0,3">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto" />
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <Rectangle Width="12" Height="12" Grid.Column="0" Fill="{Binding Brush}" />
+                                    <TextBlock Margin="8,0,0,0" Grid.Column="1" Text="{Binding Label}" VerticalAlignment="Center" />
+                                    <TextBlock Grid.Column="2" Foreground="{ThemeResource TextFillColorSecondaryBrush}" Text="{Binding Percent}" VerticalAlignment="Center" />
+                                </Grid>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                </StackPanel>
+            </Border>
+
+            <!-- 两列：最活跃时段 / Top 应用 -->
+            <Grid ColumnSpacing="16">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+                <Border Grid.Column="0" Padding="16" CornerRadius="8" Background="{ThemeResource CardBackgroundFillColorDefaultBrush}" BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1">
+                    <StackPanel Spacing="8">
+                        <TextBlock Style="{StaticResource SubtitleTextBlockStyle}" Text="最活跃时段" />
+                        <Grid x:Name="HourHeat" Height="26" />
+                        <Grid x:Name="HourTicks" Height="14" />
+                        <TextBlock x:Name="ActiveHoursText" Style="{StaticResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextTrimming="CharacterEllipsis" />
+                    </StackPanel>
+                </Border>
+                <Border Grid.Column="1" Padding="16" CornerRadius="8" Background="{ThemeResource CardBackgroundFillColorDefaultBrush}" BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1">
+                    <StackPanel Spacing="12">
+                        <TextBlock Style="{StaticResource SubtitleTextBlockStyle}" Text="Top 应用" />
+                        <ItemsControl x:Name="TopApps">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <Grid Margin="0,4">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="Auto" />
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Grid.Column="0" Text="{Binding Name}" TextTrimming="CharacterEllipsis" />
+                                        <TextBlock Grid.Column="1" Foreground="{ThemeResource TextFillColorSecondaryBrush}" Text="{Binding Duration}" />
+                                    </Grid>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </StackPanel>
+                </Border>
+            </Grid>
+
+        </StackPanel>
+    </ScrollViewer>
+</Page>
