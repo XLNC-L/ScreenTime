@@ -22,7 +22,24 @@ public partial class InboxPage : Page
     public static int CountUnclassified()
         => App.Current.Database.GetAllApps().Count(a => a.Category == CategoryService.Unclassified);
 
+    /// <summary>加载入口：失败时在页面内提示并可重试，而不是靠全局 handler 留白。</summary>
     private void LoadInbox()
+    {
+        try
+        {
+            LoadInboxCore();
+            ErrorBar.IsOpen = false;
+        }
+        catch (Exception ex)
+        {
+            ErrorBar.Message = ex.Message;
+            ErrorBar.IsOpen = true;
+        }
+    }
+
+    private void RetryBtn_Click(object sender, RoutedEventArgs e) => LoadInbox();
+
+    private void LoadInboxCore()
     {
         _loading = true;
         var apps = App.Current.Database.GetAllApps()

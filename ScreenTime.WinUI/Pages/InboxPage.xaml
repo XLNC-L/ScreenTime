@@ -8,6 +8,7 @@
             <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
             <RowDefinition Height="*" />
         </Grid.RowDefinitions>
 
@@ -43,8 +44,22 @@
                 Content="全选" />
         </StackPanel>
 
-        <Border
+        <!-- 加载失败时的页内提示，不靠全局兜底留白 -->
+        <InfoBar
+            x:Name="ErrorBar"
             Grid.Row="3"
+            Margin="0,12,0,0"
+            IsClosable="False"
+            IsOpen="False"
+            Severity="Error"
+            Title="加载失败">
+            <InfoBar.ActionButton>
+                <Button Click="RetryBtn_Click" Content="重试" />
+            </InfoBar.ActionButton>
+        </InfoBar>
+
+        <Border
+            Grid.Row="4"
             Margin="0,12,0,0"
             Padding="8"
             Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"

@@ -50,7 +50,24 @@ public partial class WebPage : Page
         LoadPages();
     }
 
+    /// <summary>加载入口：失败时在页面内提示并可重试，而不是靠全局 handler 留白。</summary>
     private void LoadPages()
+    {
+        try
+        {
+            LoadPagesCore();
+            ErrorBar.IsOpen = false;
+        }
+        catch (Exception ex)
+        {
+            ErrorBar.Message = ex.Message;
+            ErrorBar.IsOpen = true;
+        }
+    }
+
+    private void RetryBtn_Click(object sender, RoutedEventArgs e) => LoadPages();
+
+    private void LoadPagesCore()
     {
         var days = 30;
         if (RangeBox.SelectedItem is ComboBoxItem item && item.Tag is string tag &&

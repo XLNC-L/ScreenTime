@@ -9,6 +9,18 @@
 
             <TextBlock Style="{StaticResource TitleTextBlockStyle}" Text="历史" />
 
+            <!-- 加载失败时的页内提示，不靠全局兜底留白 -->
+            <InfoBar
+                x:Name="ErrorBar"
+                IsClosable="False"
+                IsOpen="False"
+                Severity="Error"
+                Title="加载失败">
+                <InfoBar.ActionButton>
+                    <Button Click="RetryBtn_Click" Content="重试" />
+                </InfoBar.ActionButton>
+            </InfoBar>
+
             <!-- 控制条 -->
             <Border
                 Padding="16"

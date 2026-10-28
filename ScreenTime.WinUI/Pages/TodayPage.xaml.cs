@@ -34,7 +34,24 @@ public partial class TodayPage : Page
         LeftCol.SizeChanged += (_, e) => AppRankCard.Height = e.NewSize.Height;
     }
 
+    /// <summary>加载入口：失败时在页面内提示并可重试，而不是靠全局 handler 留白。</summary>
     private void LoadData()
+    {
+        try
+        {
+            LoadDataCore();
+            ErrorBar.IsOpen = false;
+        }
+        catch (Exception ex)
+        {
+            ErrorBar.Message = ex.Message;
+            ErrorBar.IsOpen = true;
+        }
+    }
+
+    private void RetryBtn_Click(object sender, RoutedEventArgs e) => LoadData();
+
+    private void LoadDataCore()
     {
         var today = DateTime.Now;
         DateText.Text = today.ToString("yyyy年M月d日 dddd");

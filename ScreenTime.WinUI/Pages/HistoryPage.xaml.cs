@@ -23,7 +23,24 @@ public partial class HistoryPage : Page
 
     private void QueryBtn_Click(object sender, RoutedEventArgs e) => RunQuery();
 
+    /// <summary>查询入口：失败时在页面内提示并可重试，而不是靠全局 handler 留白。</summary>
     private void RunQuery()
+    {
+        try
+        {
+            RunQueryCore();
+            ErrorBar.IsOpen = false;
+        }
+        catch (Exception ex)
+        {
+            ErrorBar.Message = ex.Message;
+            ErrorBar.IsOpen = true;
+        }
+    }
+
+    private void RetryBtn_Click(object sender, RoutedEventArgs e) => RunQuery();
+
+    private void RunQueryCore()
     {
         var fromDay = FromPicker.Date?.LocalDateTime.Date ?? DateTime.Today.AddDays(-7);
         var toDay = ToPicker.Date?.LocalDateTime.Date ?? DateTime.Today;
