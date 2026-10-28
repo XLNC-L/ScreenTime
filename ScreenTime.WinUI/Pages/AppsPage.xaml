@@ -30,17 +30,30 @@
                 Header="分类筛选"
                 HorizontalAlignment="Stretch"
                 SelectionChanged="FilterBox_SelectionChanged" />
-            <Button
-                x:Name="ImportBtn"
+            <StackPanel
                 Grid.Column="2"
                 VerticalAlignment="Bottom"
-                Click="ImportBtn_Click"
-                ToolTipService.ToolTip="扫描开始菜单，把已安装但还没用过的应用加入列表（时长为 0，方便提前分类）">
-                <StackPanel Orientation="Horizontal" Spacing="8">
-                    <FontIcon FontSize="12" Glyph="&#xE8B5;" />
-                    <TextBlock Text="导入已安装应用" />
-                </StackPanel>
-            </Button>
+                Orientation="Horizontal"
+                Spacing="8">
+                <Button
+                    x:Name="ImportBtn"
+                    Click="ImportBtn_Click"
+                    ToolTipService.ToolTip="扫描开始菜单与已安装的商店应用，把还没用过的应用加入列表（时长为 0，方便提前分类）">
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                        <FontIcon FontSize="12" Glyph="&#xE8B5;" />
+                        <TextBlock Text="导入已安装应用" />
+                    </StackPanel>
+                </Button>
+                <Button
+                    x:Name="RefreshBtn"
+                    Click="RefreshBtn_Click"
+                    ToolTipService.ToolTip="重扫应用的实际安装位置：程序升级、换目录或 UWP 版本更新后，用这个把失效的路径找回来">
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                        <FontIcon FontSize="12" Glyph="&#xE72C;" />
+                        <TextBlock Text="刷新" />
+                    </StackPanel>
+                </Button>
+            </StackPanel>
             <StackPanel
                 Grid.Column="3"
                 VerticalAlignment="Bottom"

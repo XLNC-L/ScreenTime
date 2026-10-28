@@ -152,6 +152,56 @@ public static class UwpAppService
         });
     }
 
+    /// <summary>
+    /// 进程名 → 当前包内 exe 路径。UWP 应用升级后版本目录会变
+    ///（<c>..._11.2607.0.0_x64__8wekyb3d8bbwe</c>），旧路径就失效了。
+    /// 供「刷新」重扫路径使用。
+    /// </summary>
+    public static async Task<Dictionary<string, string>> GetExePathMapAsync()
+    {
+        var map = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+        PackageManager pm;
+        try { pm = new PackageManager(); }
+        catch { return map; }
+
+        List<Package> packages;
+        try { packages = pm.FindPackagesForUser(string.Empty).ToList(); }
+        catch { return map; }
+
+        foreach (var pkg in packages)
+        {
+            try
+            {
+                if (pkg.IsFramework || pkg.IsResourcePackage) continue;
+                if (pkg.SignatureKind == PackageSignatureKind.System) continue;
+
+                var root = pkg.InstalledLocation?.Path;
+                if (string.IsNullOrEmpty(root)) continue;
+                var manifestPath = Path.Combine(root, "AppxManifest.xml");
+                if (!File.Exists(manifestPath)) continue;
+
+                var listEntries = await SafeAppListEntriesAsync(pkg);
+                if (listEntries.Count == 0) continue;
+                var visibleIds = VisibleAppIds(listEntries);
+
+                foreach (var (exe, appId) in ReadApplications(manifestPath))
+                {
+                    if (visibleIds.Count > 0 && !visibleIds.Contains(appId)) continue;
+                    var process = Path.GetFileNameWithoutExtension(exe);
+                    if (string.IsNullOrEmpty(process)) continue;
+                    map.TryAdd(process, Path.Combine(root, exe));
+                }
+            }
+            catch
+            {
+                // 受保护包读不到，跳过
+            }
+        }
+
+        return map;
+    }
+
     /// <summary>给「已记录但还没有图标」的 UWP 应用补图标，返回补上的数量。</summary>
     public static async Task<int> BackfillIconsAsync(Database db)
     {

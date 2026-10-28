@@ -113,6 +113,39 @@ public partial class AppsPage : Page
         if (IsLoaded) LoadApps();
     }
 
+    /// <summary>重扫应用的实际安装位置：程序升级/换目录/UWP 版本更新后路径会失效。</summary>
+    private async void RefreshBtn_Click(object sender, RoutedEventArgs e)
+    {
+        RefreshBtn.IsEnabled = false;
+        int updated = 0, total = 0;
+        try
+        {
+            var db = App.Current.Database;
+            (updated, total) = await Task.Run(() => InstalledAppService.RefreshPathsAsync(db));
+        }
+        catch
+        {
+            // 重扫失败不影响已有数据，下面照常刷新列表
+        }
+        finally
+        {
+            RefreshBtn.IsEnabled = true;
+        }
+
+        LoadApps();
+
+        var dialog = new ContentDialog
+        {
+            XamlRoot = XamlRoot,
+            Title = "刷新应用位置",
+            Content = updated > 0
+                ? $"已更新 {updated} 个应用的安装路径（共检查 {total} 个）。\n\n路径失效通常发生在程序升级、移动目录或 UWP 应用版本更新之后。"
+                : $"检查了 {total} 个应用，路径都还有效，无需更新。",
+            CloseButtonText = "好"
+        };
+        await dialog.ShowAsync();
+    }
+
     /// <summary>扫描开始菜单与已安装的 UWP/商店应用，补充还没用过的应用。</summary>
     private async void ImportBtn_Click(object sender, RoutedEventArgs e)
     {

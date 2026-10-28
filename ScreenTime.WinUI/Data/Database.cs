@@ -546,15 +546,16 @@ public sealed class Database
     }
 
     /// <summary>更新应用的可执行文件路径（自身归一化后路径会随构建目录变化）。</summary>
-    public void UpdateAppExePath(int appId, string exePath)
+    /// <summary>更新应用的 exe 路径，返回是否真的变了。</summary>
+    public bool UpdateAppExePath(int appId, string exePath)
     {
-        if (string.IsNullOrEmpty(exePath)) return;
+        if (string.IsNullOrEmpty(exePath)) return false;
         using var c = Open();
         using var cmd = c.CreateCommand();
-        cmd.CommandText = "UPDATE apps SET exe_path=$p WHERE id=$id";
+        cmd.CommandText = "UPDATE apps SET exe_path=$p WHERE id=$id AND exe_path<>$p";
         cmd.Parameters.AddWithValue("$p", exePath);
         cmd.Parameters.AddWithValue("$id", appId);
-        cmd.ExecuteNonQuery();
+        return cmd.ExecuteNonQuery() > 0;
     }
 
     /// <summary>

@@ -27,6 +27,62 @@ public static class InstalledAppService
         "chrome_proxy", "msedge_proxy",
     };
 
+    /// <summary>
+    /// 重扫一遍应用的 exe 位置。程序升级、换目录、UWP 版本号变化后，
+    /// 库里记录的路径会失效（图标、「打开所在文件夹」都会跟着坏）。
+    /// 依次用「运行中的进程 → 开始菜单快捷方式 → UWP 包」三类来源补齐，
+    /// 只处理当前路径已失效的条目，路径还有效的不动。
+    /// </summary>
+    /// <returns>(更新数, 检查总数)</returns>
+    public static async Task<(int Updated, int Total)> RefreshPathsAsync(Database db)
+    {
+        var apps = db.GetAllApps();
+        var map = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+        // 1) 运行中的进程最准
+        foreach (var p in System.Diagnostics.Process.GetProcesses())
+        {
+            try
+            {
+                var file = p.MainModule?.FileName;
+                if (!string.IsNullOrEmpty(file)) map.TryAdd(p.ProcessName, file);
+            }
+            catch
+            {
+                // 受保护进程读不到模块路径，跳过
+            }
+            finally
+            {
+                p.Dispose();
+            }
+        }
+
+        // 2) 开始菜单快捷方式：程序没在跑时也能拿到
+        foreach (var lnk in EnumerateShortcuts())
+        {
+            var resolved = ResolveShortcut(lnk);
+            if (resolved is not { } sc) continue;
+            if (!sc.Target.EndsWith(".exe", StringComparison.OrdinalIgnoreCase)) continue;
+            var process = Path.GetFileNameWithoutExtension(sc.Target);
+            if (!string.IsNullOrEmpty(process)) map.TryAdd(process, sc.Target);
+        }
+
+        // 3) UWP 包：升级后版本目录会变
+        foreach (var kv in await UwpAppService.GetExePathMapAsync())
+            map.TryAdd(kv.Key, kv.Value);
+
+        var updated = 0;
+        foreach (var a in apps)
+        {
+            if (!string.IsNullOrEmpty(a.ExePath) && File.Exists(a.ExePath)) continue;
+            if (!map.TryGetValue(a.ProcessName, out var path)) continue;
+            if (!File.Exists(path)) continue;
+            if (db.UpdateAppExePath(a.Id, path)) updated++;
+        }
+
+        return (updated, apps.Count);
+    }
+
     /// <summary>执行导入，返回新增的应用数量。</summary>
     public static int Import(Database db)
     {
