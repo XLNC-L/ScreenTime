@@ -10,6 +10,7 @@
 #include <atlframe.h>
 #include <atlctrls.h>
 #include <dwmapi.h>
+#include <shellapi.h>
 #include "TrayIcon.h"
 #include "D2DContext.h"
 #include "DonutChart.h"
@@ -212,6 +213,9 @@ private:
     // 数据保活：组件只持有 label 指针，wstring 生命周期挂在 MainFrame
     TodayResult m_today;
 
+    // 排行应用图标（ID2D1Bitmap 是设备资源，随窗口隐藏释放；随 MainFrame 生命周期保活）
+    std::vector<CComPtr<ID2D1Bitmap>> m_rankIcons;
+
     // ---- 渲染生命周期（懒初始化 / 隐藏释放）----
 
     void EnsureD2D()
@@ -259,6 +263,7 @@ private:
         m_dateFmt.Release();
 
         m_today = TodayResult{}; // 一并释放数据（wstring）
+        m_rankIcons.clear();     // 释放应用图标位图
         m_d2d.ReleaseAll();
 
         // 托盘常驻时把工作集修剪到最小（类似任务管理器最小化行为），
@@ -333,16 +338,24 @@ private:
         }
         m_purpose.SetItems(std::move(purposes));
 
-        // 应用排行（轮换色板，按时长降序；RankList 期望分钟值）
+        // 应用排行（轮换色板，按时长降序；RankList 期望分钟值；提取 exe 图标）
         std::vector<RankList::RankItem> ranks;
         static const Palette::GradientPair kRotate[] = {
             Palette::Teal(), Palette::Violet(), Palette::Amber(), Palette::Pink(),
             Palette::Blue(), Palette::Sage(),  Palette::Slate(),
         };
+        m_rankIcons.clear();
+        ID2D1RenderTarget* rt = m_d2d.RT();
         for (size_t i = 0; i < m_today.ranks.size(); ++i)
+        {
+            CComPtr<ID2D1Bitmap> icon;
+            if (rt) icon = ExtractAppIcon(rt, m_today.ranks[i].exePath);
+            m_rankIcons.push_back(icon);
             ranks.push_back({ m_today.ranks[i].name.c_str(),
                               (float)(m_today.ranks[i].seconds / 60.0),
-                              kRotate[i % 7] });
+                              kRotate[i % 7],
+                              icon ? icon.p : nullptr });
+        }
         m_rank.SetItems(std::move(ranks));
         m_rank.SetEmpty(m_today.ranks.empty());
 
@@ -430,6 +443,68 @@ private:
         std::string s(n - 1, '\0');
         ::WideCharToMultiByte(CP_UTF8, 0, w.c_str(), -1, s.data(), n, nullptr, nullptr);
         return s;
+    }
+
+    // 从 exe 路径提取应用图标（32x32），转为 premultiplied BGRA 的 D2D 位图；
+    // 任何一步失败都返回空（排行回退到渐变色点），不抛异常
+    static CComPtr<ID2D1Bitmap> ExtractAppIcon(ID2D1RenderTarget* rt, const std::wstring& exePath)
+    {
+        CComPtr<ID2D1Bitmap> bmp;
+        if (!rt || exePath.empty()) return bmp;
+
+        SHFILEINFOW sfi{};
+        if (!::SHGetFileInfoW(exePath.c_str(), 0, &sfi, sizeof(sfi), SHGFI_ICON | SHGFI_LARGEICON))
+            return bmp;
+        HICON hIcon = sfi.hIcon;
+        if (!hIcon) return bmp;
+
+        ICONINFO ii{};
+        if (::GetIconInfo(hIcon, &ii))
+        {
+            BITMAP bm{};
+            if (ii.hbmColor && ::GetObjectW(ii.hbmColor, sizeof(bm), &bm) == sizeof(bm) &&
+                bm.bmWidth > 0 && bm.bmHeight > 0)
+            {
+                const int w = bm.bmWidth, h = bm.bmHeight;
+                std::vector<BYTE> px((size_t)w * h * 4);
+                BITMAPINFO bi{};
+                bi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+                bi.bmiHeader.biWidth = w;
+                bi.bmiHeader.biHeight = -h; // top-down
+                bi.bmiHeader.biPlanes = 1;
+                bi.bmiHeader.biBitCount = 32;
+                bi.bmiHeader.biCompression = BI_RGB;
+
+                HDC hdc = ::CreateCompatibleDC(nullptr);
+                if (hdc)
+                {
+                    if (::GetDIBits(hdc, ii.hbmColor, 0, (UINT)h, px.data(), &bi, DIB_RGB_COLORS))
+                    {
+                        // BGRA straight → premultiplied（D2D 位图要求）
+                        for (int i = 0; i < w * h; ++i)
+                        {
+                            BYTE* p = px.data() + (size_t)i * 4;
+                            const BYTE a = p[3];
+                            if (a == 0) { p[0] = p[1] = p[2] = 0; continue; }
+                            p[0] = (BYTE)((UINT)p[0] * a / 255);
+                            p[1] = (BYTE)((UINT)p[1] * a / 255);
+                            p[2] = (BYTE)((UINT)p[2] * a / 255);
+                        }
+                        rt->CreateBitmap(
+                            D2D1::SizeU((UINT32)w, (UINT32)h), px.data(), (UINT32)w * 4,
+                            D2D1::BitmapProperties(
+                                D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM,
+                                                  D2D1_ALPHA_MODE_PREMULTIPLIED)),
+                            &bmp);
+                    }
+                    ::DeleteDC(hdc);
+                }
+            }
+            if (ii.hbmColor) ::DeleteObject(ii.hbmColor);
+            if (ii.hbmMask)  ::DeleteObject(ii.hbmMask);
+        }
+        ::DestroyIcon(hIcon);
+        return bmp;
     }
 
     // 卡片通用样式（复刻原版 Border：圆角 8、CardBackground + 1px 描边）

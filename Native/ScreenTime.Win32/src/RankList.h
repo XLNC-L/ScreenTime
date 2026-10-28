@@ -17,6 +17,7 @@ public:
         const wchar_t* name = L"";
         float minutes = 0.f;
         Palette::GradientPair gradient;
+        ID2D1Bitmap* icon = nullptr; // 应用图标（非拥有，MainFrame 保活；空则画色点）
     };
 
     void SetItems(std::vector<RankItem> items)
@@ -92,9 +93,20 @@ public:
                 rt->FillRoundedRectangle(D2D1::RoundedRect(bar, 2.f, 2.f), m_barGradients[i]);
             }
 
-            // 色点（渐变）
-            D2D1_RECT_F dot = { m_bounds.left, y + 4.f, m_bounds.left + 24.f, y + 28.f };
-            rt->FillRoundedRectangle(D2D1::RoundedRect(dot, 8.f, 8.f), m_barGradients[i]);
+            // 应用图标（24x24，复刻原版）或渐变圆点兜底
+            D2D1_RECT_F iconRc = { m_bounds.left, y + 4.f, m_bounds.left + 24.f, y + 28.f };
+            if (item.icon)
+            {
+                // 底色圆角块 + 位图（图标本身带 alpha，底色只作安全垫）
+                rt->FillRoundedRectangle(D2D1::RoundedRect(iconRc, 4.f, 4.f), m_trackBrush);
+                rt->DrawBitmap(item.icon, iconRc, 1.0f,
+                               D2D1_BITMAP_INTERPOLATION_MODE_LINEAR,
+                               D2D1::RectF(0.f, 0.f, 32.f, 32.f));
+            }
+            else
+            {
+                rt->FillRoundedRectangle(D2D1::RoundedRect(iconRc, 8.f, 8.f), m_barGradients[i]);
+            }
 
             // 应用名
             D2D1_RECT_F rcName = { m_bounds.left + 34.f, y, m_bounds.left + 240.f, y + 34.f };

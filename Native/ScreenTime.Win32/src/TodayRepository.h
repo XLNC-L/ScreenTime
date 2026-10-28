@@ -30,7 +30,7 @@ struct TodayResult
     double displaySec = 0.0; // 亮屏时长
 
     struct CategorySlice { std::wstring name; double seconds; };
-    struct RankItem      { std::wstring name; double seconds; };
+    struct RankItem      { std::wstring name; std::wstring exePath; double seconds; };
     struct PurposeItem   { std::wstring name; double seconds; };
     struct Slot          { double startMin = 0, endMin = 0; std::wstring app; std::wstring category; };
 
@@ -191,10 +191,10 @@ public:
         };
 
         // 1) apps 信息
-        struct AppInfo { std::string name, category; int ignored = 0, merged = 0; };
+        struct AppInfo { std::string name, category, exePath; int ignored = 0, merged = 0; };
         std::vector<AppInfo> appsById(64); // 稀疏索引：id 一般不大
         std::vector<int> appIds;
-        if (query("SELECT id, app_name, category, ignored, merged_into FROM apps", 0))
+        if (query("SELECT id, app_name, category, ignored, merged_into, exe_path FROM apps", 0))
         {
             while (sqlite3_step(st) == SQLITE_ROW)
             {
@@ -204,6 +204,8 @@ public:
                 appsById[id].category = (const char*)sqlite3_column_text(st, 2);
                 appsById[id].ignored = sqlite3_column_int(st, 3);
                 appsById[id].merged = sqlite3_column_int(st, 4);
+                if (sqlite3_column_text(st, 5))
+                    appsById[id].exePath = (const char*)sqlite3_column_text(st, 5);
                 appIds.push_back(id);
             }
         }
@@ -341,7 +343,8 @@ public:
             ivs.insert(ivs.end(), b.au.begin(), b.au.end());
             const double sec = UnionSeconds(ivs);
             if (sec > 0)
-                r.ranks.push_back({ Utf8ToWide(appsById[id].name.c_str()), sec });
+                r.ranks.push_back({ Utf8ToWide(appsById[id].name.c_str()),
+                                    Utf8ToWide(appsById[id].exePath.c_str()), sec });
         }
         std::sort(r.ranks.begin(), r.ranks.end(),
             [](const auto& a, const auto& b) { return a.seconds > b.seconds; });
