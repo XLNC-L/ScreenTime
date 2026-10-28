@@ -23,10 +23,27 @@ public:
     void SetItems(std::vector<RankItem> items)
     {
         m_items = std::move(items);
+        m_scrollPos = 0; // 新数据回到顶部
         m_needDataRebuild = true;
     }
 
     void SetEmpty(bool empty) { m_empty = empty; }
+
+    // 滚轮滚动：delta = 每次滚动的行数（正=向下）
+    void ScrollBy(int delta)
+    {
+        const int n = (int)m_items.size();
+        const int maxScroll = std::max(0, n - m_maxRows);
+        if (maxScroll == 0) return;
+        const int next = std::clamp(m_scrollPos + delta, 0, maxScroll);
+        if (next != m_scrollPos)
+        {
+            m_scrollPos = next;
+            m_needDataRebuild = true;
+        }
+    }
+
+    bool IsScrollable() const { return (int)m_items.size() > m_maxRows; }
 
     // 窗口隐藏时释放全部 D2D 资源
     void ReleaseResources()
@@ -69,28 +86,28 @@ public:
             return;
         }
 
-        // 最大值用于进度条比例
+        // 最大值用于进度条比例（全量）
         float maxMin = 1.f;
         for (const auto& it : m_items)
             if (it.minutes > maxMin) maxMin = it.minutes;
 
-        const int rows = std::min((int)m_items.size(), m_maxRows);
-        for (int i = 0; i < rows; ++i)
+        const int rows = std::min((int)m_items.size() - m_scrollPos, m_maxRows);
+        for (int r = 0; r < rows; ++r)
         {
-            const auto& item = m_items[i];
-            const FLOAT y = m_listTop + i * 48.f;
+            const auto& item = m_items[m_scrollPos + r];
+            const FLOAT y = m_listTop + r * 48.f;
 
             // 行底进度条背景（全宽 4px）
             D2D1_RECT_F track = { m_bounds.left, y + 34.f, m_bounds.right, y + 38.f };
             rt->FillRoundedRectangle(D2D1::RoundedRect(track, 2.f, 2.f), m_trackBrush);
 
             // 进度条前景（渐变，按比例）
-            if (m_barGradients[i])
+            if (m_barGradients[r])
             {
                 const FLOAT ratio = item.minutes / maxMin;
                 D2D1_RECT_F bar = { m_bounds.left, y + 34.f,
                                     m_bounds.left + (m_bounds.right - m_bounds.left) * ratio, y + 38.f };
-                rt->FillRoundedRectangle(D2D1::RoundedRect(bar, 2.f, 2.f), m_barGradients[i]);
+                rt->FillRoundedRectangle(D2D1::RoundedRect(bar, 2.f, 2.f), m_barGradients[r]);
             }
 
             // 应用图标（24x24，复刻原版）或渐变圆点兜底
@@ -105,7 +122,7 @@ public:
             }
             else
             {
-                rt->FillRoundedRectangle(D2D1::RoundedRect(iconRc, 8.f, 8.f), m_barGradients[i]);
+                rt->FillRoundedRectangle(D2D1::RoundedRect(iconRc, 8.f, 8.f), m_barGradients[r]);
             }
 
             // 应用名
@@ -123,6 +140,23 @@ public:
             rt->DrawText(buf, (UINT32)wcslen(buf), m_timeFmt, rcTime, m_timeBrush,
                          D2D1_DRAW_TEXT_OPTIONS_NONE, DWRITE_MEASURING_MODE_NATURAL);
         }
+
+        // 滚动条指示（仅当条目数超过可见行）
+        if (IsScrollable())
+        {
+            const FLOAT sbLeft = m_bounds.right - 6.f;
+            const FLOAT sbTop = m_listTop, sbBot = m_bounds.bottom - 4.f;
+            D2D1_RECT_F sbTrack = { sbLeft, sbTop, sbLeft + 4.f, sbBot };
+            rt->FillRoundedRectangle(D2D1::RoundedRect(sbTrack, 2.f, 2.f), m_trackBrush);
+
+            const int n = (int)m_items.size();
+            const int maxScroll = n - m_maxRows;
+            const FLOAT trackH = sbBot - sbTop;
+            const FLOAT thumbH = std::max(trackH * m_maxRows / n, 16.f);
+            const FLOAT thumbY = sbTop + (trackH - thumbH) * m_scrollPos / maxScroll;
+            D2D1_RECT_F thumb = { sbLeft, thumbY, sbLeft + 4.f, thumbY + thumbH };
+            rt->FillRoundedRectangle(D2D1::RoundedRect(thumb, 2.f, 2.f), m_timeBrush);
+        }
     }
 
 private:
@@ -139,15 +173,15 @@ private:
         m_deviceReady = true;
     }
 
-    // 数据资源：每行一个渐变刷（进度条 + 色点共用）
+    // 数据资源：每行一个渐变刷（进度条 + 色点共用），按当前可见窗口重建
     void RebuildData(D2DContext& ctx)
     {
         ID2D1RenderTarget* rt = ctx.RT();
-        const int n = std::min((int)m_items.size(), m_maxRows);
+        const int n = std::min((int)m_items.size() - m_scrollPos, m_maxRows);
         m_barGradients.assign(n, nullptr);
         for (int i = 0; i < n; ++i)
         {
-            const auto& item = m_items[i];
+            const auto& item = m_items[m_scrollPos + i];
             const D2D1_POINT_2F g0 = { m_bounds.left, m_listTop + i * 48.f + 36.f };
             const D2D1_POINT_2F g1 = { m_bounds.left + 200.f, m_listTop + i * 48.f + 36.f };
             m_barGradients[i] = ctx.MakeLinearGradient(item.gradient.a, item.gradient.b, g0, g1);
@@ -167,6 +201,7 @@ private:
     bool m_empty = false;
     bool m_needDataRebuild = true;
     bool m_deviceReady = false;
+    int m_scrollPos = 0; // 滚动偏移（可见窗口首行索引）
 
     D2D1_RECT_F m_bounds{};
     D2D1_RECT_F m_titleRect{};

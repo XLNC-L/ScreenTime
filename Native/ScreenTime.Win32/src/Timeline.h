@@ -88,9 +88,10 @@ public:
         const double span = std::max(rangeEnd - rangeStart, tickMin);
 
         const FLOAT stripW = m_stripRect.right - m_stripRect.left;
+        // X 返回绝对坐标（相对偏移 + 条带左缘），块/刻度/游标直接使用
         auto X = [&](double t) -> FLOAT {
             const double x = (t - rangeStart) / span * stripW;
-            return (FLOAT)std::clamp(x, 0.0, (double)stripW);
+            return m_stripRect.left + (FLOAT)std::clamp(x, 0.0, (double)stripW);
         };
 
         // 条带背景
@@ -123,15 +124,15 @@ public:
         for (double t = rangeStart; t <= rangeEnd + 0.001; t += tickMin)
         {
             const FLOAT x = X(t);
-            const FLOAT left = std::clamp(x - kLabelW / 2.f, 0.f, std::max(stripW - kLabelW, 0.f));
+            const FLOAT left = std::clamp(x - kLabelW / 2.f, m_stripRect.left,
+                                          std::max(m_stripRect.right - kLabelW, m_stripRect.left));
             rt->DrawLine(D2D1::Point2F(x, m_tickRect.top),
                          D2D1::Point2F(x, m_tickRect.bottom), m_tickBrush, 1.f);
 
             wchar_t buf[16];
             const int hour = (int)(t / 60.0), minute = (int)t % 60;
             swprintf_s(buf, L"%02d:%02d", hour, minute);
-            D2D1_RECT_F rcTxt = { m_stripRect.left + left, m_tickRect.top,
-                                  m_stripRect.left + left + kLabelW, m_tickRect.bottom };
+            D2D1_RECT_F rcTxt = { left, m_tickRect.top, left + kLabelW, m_tickRect.bottom };
             rt->DrawText(buf, (UINT32)wcslen(buf), m_tickFmt, rcTxt, m_tickBrush,
                          D2D1_DRAW_TEXT_OPTIONS_NONE, DWRITE_MEASURING_MODE_NATURAL);
         }

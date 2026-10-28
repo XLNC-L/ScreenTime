@@ -33,6 +33,7 @@ public:
         MESSAGE_HANDLER(WM_CLOSE, OnClose)
         MESSAGE_HANDLER(WM_DESTROY, OnDestroy)
         MESSAGE_HANDLER(WM_PAINT, OnPaint)
+        MESSAGE_HANDLER(WM_MOUSEWHEEL, OnMouseWheel)
         MESSAGE_HANDLER(TrayIcon::WM_TRAY, OnTray)
         MESSAGE_HANDLER(TrayIcon::kCmdOpen, OnOpen)
         MESSAGE_HANDLER(TrayIcon::kCmdExit, OnExit)
@@ -58,6 +59,23 @@ public:
     {
         bHandled = TRUE;
         ::PostMessageW(m_hWnd, WM_CLOSE, 0, 0);
+        return 0;
+    }
+
+    LRESULT OnMouseWheel(UINT, WPARAM wParam, LPARAM, BOOL& bHandled)
+    {
+        bHandled = TRUE;
+        // 光标在应用排行卡内才滚动（其余区域不响应滚轮）
+        POINT pt;
+        ::GetCursorPos(&pt);
+        ::ScreenToClient(m_hWnd, &pt);
+        if (pt.x >= m_rankCard.left && pt.x < m_rankCard.right &&
+            pt.y >= m_rankCard.top && pt.y < m_rankCard.bottom)
+        {
+            const int delta = GET_WHEEL_DELTA_WPARAM(wParam) > 0 ? -1 : 1;
+            m_rank.ScrollBy(delta);
+            ::InvalidateRect(m_hWnd, nullptr, TRUE);
+        }
         return 0;
     }
 
@@ -169,6 +187,7 @@ public:
 
             // 右列：应用排行
             D2D1_RECT_F rankCard = { rightColL, midTop, R, midBot };
+            m_rankCard = rankCard; // 供滚轮命中判断
             DrawCard(rankCard);
             D2D1_RECT_F rankInner = { rankCard.left + 16.f, rankCard.top + 14.f,
                                       rankCard.right - 16.f, rankCard.bottom - 12.f };
@@ -215,6 +234,9 @@ private:
 
     // 排行应用图标（ID2D1Bitmap 是设备资源，随窗口隐藏释放；随 MainFrame 生命周期保活）
     std::vector<CComPtr<ID2D1Bitmap>> m_rankIcons;
+
+    // 应用排行卡区域（滚轮命中判断，OnPaint 时更新）
+    D2D1_RECT_F m_rankCard{};
 
     // ---- 渲染生命周期（懒初始化 / 隐藏释放）----
 
@@ -404,6 +426,9 @@ private:
         ranks.push_back({ L"Doubao", 21.f, Palette::Amber() });
         ranks.push_back({ L"IDM", 12.f, Palette::Pink() });
         ranks.push_back({ L"其他", 9.f, Palette::Slate() });
+        ranks.push_back({ L"VS Code", 8.f, Palette::Blue() });
+        ranks.push_back({ L"Steam", 6.f, Palette::Sage() });
+        ranks.push_back({ L"PotPlayer", 5.f, Palette::Amber() });
         m_rank.SetItems(std::move(ranks));
         m_rank.SetEmpty(false);
 
