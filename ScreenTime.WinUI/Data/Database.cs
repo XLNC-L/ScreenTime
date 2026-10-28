@@ -28,8 +28,8 @@ public record SessionEventRow(int Id, string Type, string TsUtc, string Note);
 /// <summary>单个应用下的网页使用行（site 为归一化聚合键，url 为可跳转原始地址）。</summary>
 public record PageUsageRow(string Site, string Title, string Url, double Seconds);
 
-/// <summary>跨浏览器的网页使用行。</summary>
-public record WebPageRow(string Site, string Title, string Url, string AppName, double Seconds);
+/// <summary>跨浏览器的网页使用行。ProcessName 用于区分同一页面的来源浏览器。</summary>
+public record WebPageRow(string Site, string Title, string Url, string AppName, string ProcessName, double Seconds);
 
 /// <summary>待回填的片段：无 site 的浏览器前台记录。</summary>
 public record BackfillCandidateRow(long Id, int AppId, DateTime StartUtc, DateTime EndUtc, string Title);
@@ -1097,7 +1097,8 @@ public sealed class Database
         }
 
         foreach (var ((appId, site, title, url), seconds) in merged)
-            list.Add(new WebPageRow(site, title, url, map[appId].AppName, seconds));
+            list.Add(new WebPageRow(site, title, url, map[appId].AppName,
+                map[appId].ProcessName, seconds));
         return list;
     }
 

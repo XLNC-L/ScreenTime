@@ -129,7 +129,16 @@
     - 合并到：`ComboBox` + `Button "合并"`
     - 确认/危险操作使用 `ContentDialog`
 
-### 4.5 设置页 SettingsPage
+### 4.5 网页页 WebPage
+- 页头：`TextBlock "网页" Title` + **浏览器筛选 `ComboBox`**（全部 / 数据里出现过的浏览器）+ 时间范围 `ComboBox`（7/30/90 天）
+- 摘要行：`{浏览器} · 近 N 天共 X 个页面，网页时长 …`（选「全部」时不带浏览器前缀）
+- 列表：按域名分组的 `ItemsControl`
+  - 分组头：域名（Body Strong）+ 该域名合计时长
+  - 页面行：**行首 14px 浏览器图标**（来自 apps 表记录的 exe，浏览器没运行也能取到）+ 页面标题 + 页面地址（Caption 次）+ 时长
+  - 同一网址在 Chrome 和 Edge 各算一行——浏览器是聚合维度的一部分，否则图标无法标明来源
+  - 行可点击，用默认浏览器打开原始地址
+
+### 4.6 设置页 SettingsPage
 - 全部用 **SettingsCard**（分组）+ 可选 **SettingsExpander**：
   - 常规：开机自启 `ToggleSwitch`、音频计数 `ToggleSwitch`
   - 判定：无操作时长 `ComboBox`（60/120/180/300/600）、标题保留 `ComboBox`（7/30/90/永久）

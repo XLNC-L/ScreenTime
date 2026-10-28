@@ -55,6 +55,22 @@ public static class AppDisplayService
         return false;
     }
 
+    /// <summary>
+    /// 瞬时窗口标题：桌面（Program Manager）、解锁过渡窗等。
+    /// 它们由 explorer 承载、几秒就消失，算成"使用资源管理器"会污染统计。
+    /// </summary>
+    private static readonly HashSet<string> TransientTitles = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "Program Manager",
+        "UnlockingWindow",
+        "Windows 默认锁屏界面",
+        "Windows Default Lock Screen",
+    };
+
+    /// <summary>判断当前前台窗口是否只是系统过渡界面（不是用户真正在用的应用）。</summary>
+    public static bool IsTransientWindow(string? title)
+        => !string.IsNullOrWhiteSpace(title) && TransientTitles.Contains(title.Trim());
+
     /// <summary>进程名 → 中文显示名（无映射返回 null，由调用方回退）。</summary>
     public static string? ChineseName(string processName)
     {

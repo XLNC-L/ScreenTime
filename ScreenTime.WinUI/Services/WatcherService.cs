@@ -198,7 +198,9 @@ public sealed class WatcherService : IDisposable
 
         // 系统外壳（开始菜单/搜索/通知/锁屏等）穿透：不记录外壳、不切换
         // 应用，当前真实应用片段继续延长。锁屏/睡眠/idle 已在上方处理。
-        if (AppDisplayService.IsShell(info.ProcessName, info.ExePath))
+        // 桌面（Program Manager）、解锁过渡窗这类瞬时窗口同样穿透。
+        if (AppDisplayService.IsShell(info.ProcessName, info.ExePath) ||
+            AppDisplayService.IsTransientWindow(info.Title))
         {
             if (_fgSegment != null)
             {
@@ -236,20 +238,24 @@ public sealed class WatcherService : IDisposable
             var siteChanged = site != "" && _fgSegment.Site != site;
             if (titleChanged || siteChanged)
             {
-                if ((now - _fgSegment.StartUtc).TotalSeconds < MinSegmentSeconds)
+                // 只有浏览器换页（site 变了）才切分片段——网页页需要页面级归属。
+                // 其他应用的标题只是个标签，而且不少应用标题会来回抖
+                //（"WorkBuddy AI"/"WorkBuddy"、"微信"/"Weixin"、带未读数的括号），
+                // 每抖一次就切分会把时间剁成 5 秒一条的碎片。
+                var splitForPage = siteChanged &&
+                    (now - _fgSegment.StartUtc).TotalSeconds >= MinSegmentSeconds;
+
+                if (splitForPage)
                 {
-                    // 片段还很"年轻"：就地更新标题/地址，不切分。
-                    // 页面加载时标题会连跳几次，切分只会得到一串零长度片段。
+                    CloseSegment(_fgSegment, now);
+                    _fgSegment = OpenSegment(appId, "foreground", now, info.Title, purpose, info.ProcessName, site);
+                }
+                else
+                {
                     if (info.Title != "") _fgSegment.Title = info.Title;
                     if (site != "") _fgSegment.Site = site;
                     _fgSegment.EndUtc = now;
                     _db.UpdateSegmentEnd(_fgSegment.RowId, now, _fgSegment.Title, _fgSegment.Site);
-                }
-                else
-                {
-                    // 标题变化（切换文档/标签）或网站变化：切分片段以保留准确归属
-                    CloseSegment(_fgSegment, now);
-                    _fgSegment = OpenSegment(appId, "foreground", now, info.Title, purpose, info.ProcessName, site);
                 }
             }
             else

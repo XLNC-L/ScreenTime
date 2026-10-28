@@ -6,9 +6,10 @@
     <ScrollViewer>
         <StackPanel Margin="32,24,32,32" Spacing="20">
 
-            <Grid>
+            <Grid ColumnSpacing="12">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
                     <ColumnDefinition Width="Auto" />
                 </Grid.ColumnDefinitions>
                 <TextBlock
@@ -16,8 +17,16 @@
                     Style="{StaticResource TitleTextBlockStyle}"
                     Text="网页" />
                 <ComboBox
-                    x:Name="RangeBox"
+                    x:Name="BrowserBox"
                     Grid.Column="1"
+                    MinWidth="150"
+                    VerticalAlignment="Center"
+                    DisplayMemberPath="Display"
+                    SelectionChanged="BrowserBox_SelectionChanged"
+                    ToolTipService.ToolTip="按来源浏览器筛选；每行行首的小图标也表示来源" />
+                <ComboBox
+                    x:Name="RangeBox"
+                    Grid.Column="2"
                     MinWidth="120"
                     VerticalAlignment="Center"
                     SelectionChanged="RangeBox_SelectionChanged">
@@ -77,10 +86,19 @@
                                                     Tapped="PageRow_Tapped"
                                                     ToolTipService.ToolTip="{Binding Url}">
                                                     <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="Auto" />
                                                         <ColumnDefinition Width="*" />
                                                         <ColumnDefinition Width="Auto" />
                                                     </Grid.ColumnDefinitions>
-                                                    <StackPanel Grid.Column="0" Spacing="2">
+                                                    <!-- 来源浏览器：小图标代替文字 -->
+                                                    <Image
+                                                        Grid.Column="0"
+                                                        Width="14"
+                                                        Height="14"
+                                                        Margin="0,3,8,0"
+                                                        VerticalAlignment="Top"
+                                                        Source="{Binding Icon}" />
+                                                    <StackPanel Grid.Column="1" Spacing="2">
                                                         <TextBlock
                                                             Text="{Binding Title}"
                                                             TextTrimming="CharacterEllipsis" />
@@ -91,7 +109,7 @@
                                                             TextTrimming="CharacterEllipsis" />
                                                     </StackPanel>
                                                     <TextBlock
-                                                        Grid.Column="1"
+                                                        Grid.Column="2"
                                                         Margin="12,0,0,0"
                                                         VerticalAlignment="Center"
                                                         Foreground="{ThemeResource TextFillColorSecondaryBrush}"
