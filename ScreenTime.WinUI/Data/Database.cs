@@ -266,6 +266,9 @@ public sealed class Database
         // 导致应用页出现两个「豆包」。保留使用记录最多的那条，其余并入。
         MergeDuplicateApps(c);
 
+        // 清掉浏览器 PWA 启动器的残留条目：它们永远不会有自己的时长
+        DeletePwaLauncherApps(c);
+
         // 3) 系统外壳应用标记忽略（保留数据，可在应用页恢复）
         var shellIds = new List<int>();
         using (var q = c.CreateCommand())
@@ -424,6 +427,23 @@ public sealed class Database
             }
         }
         return removed;
+    }
+
+    /// <summary>
+    /// 删除浏览器 PWA 启动器（chrome_proxy / msedge_proxy）的条目。
+    /// PWA 的窗口由浏览器进程承载，启动器本身不产生时长；留在应用列表里
+    /// 只会是一条 0 分钟的干扰项。有片段的（理论上不会有）保留，避免误删。
+    /// </summary>
+    private static int DeletePwaLauncherApps(SqliteConnection c)
+    {
+        using var cmd = c.CreateCommand();
+        cmd.CommandText = """
+            DELETE FROM apps
+            WHERE process_name IN ('chrome_proxy', 'msedge_proxy')
+              AND merged_into = 0
+              AND id NOT IN (SELECT app_id FROM usage_segments)
+            """;
+        return cmd.ExecuteNonQuery();
     }
 
     /// <summary>获取应用的默认用途（未设置返回空串）。</summary>

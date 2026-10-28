@@ -17,6 +17,16 @@ public static class InstalledAppService
         "repair", "修复", "license", "许可", "文档", "website", "官网", "support",
     ];
 
+    /// <summary>
+    /// 浏览器 PWA 的启动器。PWA 窗口实际由 chrome.exe / msedge.exe 承载，
+    /// 启动器只在点开瞬间闪一下，永远不会有自己的时长。
+    /// 把它们留在应用列表里只是一条 0 分钟的干扰项，网页归属在「网页」页照样看得到。
+    /// </summary>
+    private static readonly HashSet<string> PwaLaunchers = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "chrome_proxy", "msedge_proxy",
+    };
+
     /// <summary>执行导入，返回新增的应用数量。</summary>
     public static int Import(Database db)
     {
@@ -37,6 +47,9 @@ public static class InstalledAppService
             if (string.IsNullOrEmpty(target)) continue;
             if (!target.EndsWith(".exe", StringComparison.OrdinalIgnoreCase)) continue;
             if (!File.Exists(target)) continue;
+
+            // PWA（Chrome/Edge 应用）不算独立应用，时间归浏览器
+            if (PwaLaunchers.Contains(Path.GetFileNameWithoutExtension(target))) continue;
 
             // 控制面板、注册表编辑器这类 Windows 自带小工具不算「已安装应用」，
             // 既不该出现在列表里，也不该被提前分类。
