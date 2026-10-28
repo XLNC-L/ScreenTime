@@ -126,8 +126,13 @@ internal static class Win32
         return BuildInfo(pid, "", 0);
     }
 
-    private static ForegroundInfo BuildInfo(uint pid, string title, nint hwnd)
+    private static ForegroundInfo? BuildInfo(uint pid, string title, nint hwnd)
     {
+        // PID 0 是 System Idle Process，不是真实应用。
+        // 屏幕熄灭、锁屏过渡等瞬间，GetForegroundWindow 可能返回 PID=0 的窗口，
+        // 不拦住就会造出一条 exe_path 为空的「Idle」假应用。
+        if (pid == 0) return null;
+
         var info = new ForegroundInfo { Hwnd = hwnd, Pid = pid, Title = title };
         var path = GetProcessPath(pid);
         info.ExePath = path ?? "";
