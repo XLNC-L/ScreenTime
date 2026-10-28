@@ -15,7 +15,7 @@
 #define AppPublisher "XLNC"
 #define AppExeName "ScreenTime.exe"
 ; TODO 发布前替换成实际仓库地址
-#define RepoUrl "https://github.com/XLNC/ScreenTime"
+#define RepoUrl "https://github.com/XLNC-L/ScreenTime"
 
 [Setup]
 ; AppId 必须保持不变，否则升级会变成"装了两个"
