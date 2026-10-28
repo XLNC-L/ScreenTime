@@ -36,3 +36,7 @@ screentime.location
 # 系统
 Thumbs.db
 desktop.ini
+
+# 原生版构建产物
+Native/ScreenTime.Win32/bin/
+Native/ScreenTime.Win32/obj/
