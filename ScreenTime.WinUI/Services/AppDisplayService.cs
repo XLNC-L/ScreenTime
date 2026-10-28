@@ -26,6 +26,8 @@ public static class AppDisplayService
         "dwm", "runtimebroker", "ctfmon", "taskhostw", "taskhostw",
         // 锁屏
         "lockapp", "assignedaccesslockapp",
+        // 文件选择器 / 打开方式 等模态对话框宿主（用户真正在操作的是背后的应用）
+        "pickerhost", "openwith",
         // SystemApps 下的各类对话框/宿主（按路径兜底，这里列常见名）
         "filepicker", "cred dialoghost", "accountscontrolhost", "appresolverux",
         "capturepicker", "pinningconfirmationdialog", "printdialog", "printqueueactioncenter",
