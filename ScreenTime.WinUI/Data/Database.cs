@@ -212,6 +212,8 @@ public sealed class Database
         using var c = Open();
         EnsureColumn(c, "apps", "category_manual", "INTEGER NOT NULL DEFAULT 0");
         EnsureColumn(c, "apps", "default_purpose", "TEXT NOT NULL DEFAULT ''");
+        // 显式图标来源（UWP 包内 PNG 等）；为空时回退到从 exe 提取
+        EnsureColumn(c, "apps", "icon_source", "TEXT NOT NULL DEFAULT ''");
         EnsureColumn(c, "usage_segments", "purpose", "TEXT NOT NULL DEFAULT ''");
         EnsureColumn(c, "usage_segments", "site", "TEXT NOT NULL DEFAULT ''");
         // 原始可跳转地址（site 为归一化聚合键，url 仅供点击跳转，不含追踪参数）
@@ -430,20 +432,55 @@ public sealed class Database
     }
 
     /// <summary>
-    /// 删除浏览器 PWA 启动器（chrome_proxy / msedge_proxy）的条目。
-    /// PWA 的窗口由浏览器进程承载，启动器本身不产生时长；留在应用列表里
-    /// 只会是一条 0 分钟的干扰项。有片段的（理论上不会有）保留，避免误删。
+    /// 删除浏览器 PWA 启动器的条目。
+    /// Chromium 系浏览器（Chrome / Edge / Brave / Vivaldi / Opera 等）的网页应用
+    /// 启动器一律叫 <c>&lt;brand&gt;_proxy.exe</c>，它只在点开瞬间闪一下，
+    /// PWA 窗口实际由浏览器进程承载，永远不会产生自己的时长。
+    /// 有片段的（理论上不会有）保留，避免误删。
     /// </summary>
     private static int DeletePwaLauncherApps(SqliteConnection c)
     {
         using var cmd = c.CreateCommand();
         cmd.CommandText = """
             DELETE FROM apps
-            WHERE process_name IN ('chrome_proxy', 'msedge_proxy')
-              AND merged_into = 0
+            WHERE merged_into = 0
               AND id NOT IN (SELECT app_id FROM usage_segments)
+              AND process_name LIKE '%\_proxy' ESCAPE '\'
             """;
         return cmd.ExecuteNonQuery();
+    }
+
+    /// <summary>
+    /// 删除「这次导入后已不该保留」的 UWP 条目：只动 WindowsApps 下、无使用记录、
+    /// 未参与合并的条目。用于让重复导入自愈（例如旧版本误把协议垫片也导了进来）。
+    /// </summary>
+    public int DeleteUnusedUwpApps(IReadOnlyCollection<string> keepProcessNames)
+    {
+        using var c = Open();
+        var keep = new HashSet<string>(keepProcessNames, StringComparer.OrdinalIgnoreCase);
+
+        var drop = new List<int>();
+        using (var q = c.CreateCommand())
+        {
+            q.CommandText = """
+                SELECT id, process_name FROM apps
+                WHERE exe_path LIKE '%\WindowsApps\%'
+                  AND merged_into = 0
+                  AND id NOT IN (SELECT app_id FROM usage_segments)
+                """;
+            using var r = q.ExecuteReader();
+            while (r.Read())
+                if (!keep.Contains(r.GetString(1))) drop.Add(r.GetInt32(0));
+        }
+
+        foreach (var id in drop)
+        {
+            using var d = c.CreateCommand();
+            d.CommandText = "DELETE FROM apps WHERE id=$id";
+            d.Parameters.AddWithValue("$id", id);
+            d.ExecuteNonQuery();
+        }
+        return drop.Count;
     }
 
     /// <summary>获取应用的默认用途（未设置返回空串）。</summary>
@@ -544,7 +581,8 @@ public sealed class Database
         return (int)(long)ins.ExecuteScalar()!;
     }
 
-    public int GetOrCreateApp(string exePath, string processName, string appName, string company, string category)
+    public int GetOrCreateApp(string exePath, string processName, string appName, string company,
+        string category, string iconSource = "")
     {
         using var c = Open();
 
@@ -563,6 +601,7 @@ public sealed class Database
             {
                 var foundId = (int)found;
                 SyncExePath(c, foundId, exePath);
+                SyncIconSource(c, foundId, iconSource);
                 return foundId;
             }
         }
@@ -573,13 +612,17 @@ public sealed class Database
             find.CommandText = "SELECT id FROM apps WHERE exe_path=$p AND process_name=$n";
             find.Parameters.AddWithValue("$p", exePath);
             find.Parameters.AddWithValue("$n", processName);
-            if (find.ExecuteScalar() is long id) return (int)id;
+            if (find.ExecuteScalar() is long id)
+            {
+                SyncIconSource(c, (int)id, iconSource);
+                return (int)id;
+            }
         }
 
         using var ins = c.CreateCommand();
         ins.CommandText = """
-            INSERT INTO apps (exe_path, process_name, app_name, company, category)
-            VALUES ($p,$n,$a,$co,$ca);
+            INSERT INTO apps (exe_path, process_name, app_name, company, category, icon_source)
+            VALUES ($p,$n,$a,$co,$ca,$ic);
             SELECT last_insert_rowid();
             """;
         ins.Parameters.AddWithValue("$p", exePath);
@@ -587,6 +630,7 @@ public sealed class Database
         ins.Parameters.AddWithValue("$a", appName);
         ins.Parameters.AddWithValue("$co", company);
         ins.Parameters.AddWithValue("$ca", category);
+        ins.Parameters.AddWithValue("$ic", iconSource);
         return (int)(long)ins.ExecuteScalar()!;
     }
 
@@ -597,6 +641,17 @@ public sealed class Database
         using var cmd = c.CreateCommand();
         cmd.CommandText = "UPDATE OR IGNORE apps SET exe_path=$p WHERE id=$id AND exe_path<>$p";
         cmd.Parameters.AddWithValue("$p", exePath);
+        cmd.Parameters.AddWithValue("$id", appId);
+        cmd.ExecuteNonQuery();
+    }
+
+    /// <summary>记录显式图标来源（仅在该字段为空时写入，避免覆盖已有的有效值）。</summary>
+    private static void SyncIconSource(SqliteConnection c, int appId, string iconSource)
+    {
+        if (string.IsNullOrEmpty(iconSource)) return;
+        using var cmd = c.CreateCommand();
+        cmd.CommandText = "UPDATE apps SET icon_source=$s WHERE id=$id AND icon_source=''";
+        cmd.Parameters.AddWithValue("$s", iconSource);
         cmd.Parameters.AddWithValue("$id", appId);
         cmd.ExecuteNonQuery();
     }
@@ -1205,22 +1260,24 @@ public sealed class Database
     }
 
     public List<(int Id, string Name, string Category, string ProcessName, int Ignored, int MergedInto,
-        string ExePath, string DefaultPurpose, int SegmentCount)> GetAllApps()
+        string ExePath, string DefaultPurpose, int SegmentCount, string IconSource)> GetAllApps()
     {
-        var list = new List<(int, string, string, string, int, int, string, string, int)>();
+        var list = new List<(int, string, string, string, int, int, string, string, int, string)>();
         using var c = Open();
         using var cmd = c.CreateCommand();
         cmd.CommandText = """
             SELECT a.id, a.app_name, a.category, a.process_name, a.ignored, a.merged_into,
                    a.exe_path, a.default_purpose,
-                   (SELECT COUNT(*) FROM usage_segments s WHERE s.app_id = a.id)
+                   (SELECT COUNT(*) FROM usage_segments s WHERE s.app_id = a.id),
+                   COALESCE(a.icon_source, '')
             FROM apps a
             ORDER BY a.app_name
             """;
         using var r = cmd.ExecuteReader();
         while (r.Read())
             list.Add((r.GetInt32(0), r.GetString(1), r.GetString(2), r.GetString(3),
-                r.GetInt32(4), r.GetInt32(5), r.GetString(6), r.GetString(7), r.GetInt32(8)));
+                r.GetInt32(4), r.GetInt32(5), r.GetString(6), r.GetString(7),
+                r.GetInt32(8), r.GetString(9)));
         return list;
     }
 

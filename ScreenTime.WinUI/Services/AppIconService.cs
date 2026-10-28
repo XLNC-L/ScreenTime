@@ -14,11 +14,20 @@ public static class AppIconService
     public static ImageSource? GetIcon(string exePath) => GetIcon(exePath, null);
 
     /// <summary>
-    /// 优先用记录的可执行路径；路径失效（历史记录指向旧构建目录）时，
+    /// 优先用显式图标源（UWP 包内导出的 PNG、快捷方式等）；
+    /// 没有时用记录的可执行路径；路径失效（历史记录指向旧构建目录）时，
     /// 回退到同名运行中进程的真实路径，避免排行榜里出现空白图标。
     /// </summary>
-    public static ImageSource? GetIcon(string exePath, string? processName)
+    public static ImageSource? GetIcon(string exePath, string? processName, string? iconSource = null)
     {
+        if (!string.IsNullOrWhiteSpace(iconSource) && File.Exists(iconSource))
+        {
+            if (Cache.TryGetValue(iconSource, out var cachedIcon)) return cachedIcon;
+            var fromSource = LoadImageFile(iconSource);
+            Cache[iconSource] = fromSource;
+            if (fromSource != null) return fromSource;
+        }
+
         var path = ResolvePath(exePath, processName);
         if (string.IsNullOrEmpty(path)) return null;
         if (Cache.TryGetValue(path, out var cached)) return cached;
@@ -48,6 +57,24 @@ public static class AppIconService
 
         Cache[path] = result;
         return result;
+    }
+
+    /// <summary>直接读取一张图片文件（UWP 图标已由 UwpAppService 导出为 PNG）。</summary>
+    private static ImageSource? LoadImageFile(string path)
+    {
+        try
+        {
+            var bytes = File.ReadAllBytes(path);
+            if (bytes.Length == 0) return null;
+            using var ms = new MemoryStream(bytes);
+            var bitmap = new BitmapImage();
+            bitmap.SetSource(ms.AsRandomAccessStream());
+            return bitmap;
+        }
+        catch
+        {
+            return null;
+        }
     }
 
     private static string ResolvePath(string exePath, string? processName)

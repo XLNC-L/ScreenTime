@@ -70,7 +70,7 @@ public partial class AppsPage : Page
                 a.Ignored != 0 ? $"{a.ProcessName}  ·  已忽略"
                 : a.MergedInto != 0 ? $"{a.ProcessName}  ·  已合并"
                 : $"{a.ProcessName}  ·  {a.Category}",
-                a.Ignored, a.MergedInto, SafeIcon(a.ExePath, a.ProcessName)))
+                a.Ignored, a.MergedInto, SafeIcon(a.ExePath, a.ProcessName, a.IconSource)))
             .ToList();
 
         // 先绑定各下拉框数据源（此时应用列表尚未选中，不会误触发手动分类）
@@ -102,9 +102,9 @@ public partial class AppsPage : Page
         LoadApps();
     }
 
-    private static ImageSource? SafeIcon(string exePath, string processName)
+    private static ImageSource? SafeIcon(string exePath, string processName, string iconSource)
     {
-        try { return AppIconService.GetIcon(exePath, processName); }
+        try { return AppIconService.GetIcon(exePath, processName, iconSource); }
         catch { return null; }
     }
 
@@ -113,14 +113,18 @@ public partial class AppsPage : Page
         if (IsLoaded) LoadApps();
     }
 
-    /// <summary>扫描开始菜单，补充已安装但还没用过的应用。</summary>
+    /// <summary>扫描开始菜单与已安装的 UWP/商店应用，补充还没用过的应用。</summary>
     private async void ImportBtn_Click(object sender, RoutedEventArgs e)
     {
         ImportBtn.IsEnabled = false;
-        var added = 0;
+        int desktop = 0, uwp = 0;
         try
         {
-            added = await Task.Run(() => InstalledAppService.Import(App.Current.Database));
+            var db = App.Current.Database;
+            desktop = await Task.Run(() => InstalledAppService.Import(db));
+            // UWP 导入全程 await（内部有 WinRT 异步调用），放在后台线程上跑，
+            // 既不卡 UI 也不会因为同步阻塞 WinRT 而卡死
+            uwp = await Task.Run(() => UwpAppService.ImportAsync(db));
         }
         finally
         {
@@ -129,13 +133,14 @@ public partial class AppsPage : Page
 
         LoadApps();
 
+        var total = desktop + uwp;
         var dialog = new ContentDialog
         {
             XamlRoot = XamlRoot,
             Title = "导入已安装应用",
-            Content = added > 0
-                ? $"新增 {added} 个应用，可在列表中选择并设置分类（时长为 0，不影响统计）。"
-                : "没有新的应用可导入：开始菜单里的应用都已在列表中，或无法自动识别分类。",
+            Content = total > 0
+                ? $"新增 {total} 个应用（桌面程序 {desktop} 个、UWP/商店应用 {uwp} 个）。\n\n时长为 0，不影响统计；分类不出来的会进「收件箱」，可在那里归类。"
+                : "没有新的应用可导入：开始菜单与已安装的商店应用都已在列表中。",
             CloseButtonText = "好"
         };
         await dialog.ShowAsync();

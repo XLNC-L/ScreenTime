@@ -121,6 +121,12 @@
 ### 4.4 应用页 AppsPage
 - 页头工具条：`AutoSuggestBox`（占位文字"搜索应用"）+ 分类筛选 `ComboBox` + `Button "导入已安装应用"`
   + `CheckBox "仅显示有使用记录"`（隐藏导入后时长为 0 的条目）+ `ToggleSwitch "显示已忽略"`
+- **导入**同时覆盖两条来源：
+  - 开始菜单快捷方式（Win32 程序）；浏览器的 PWA 启动器（`*_proxy.exe`、
+    或参数含 `--app-id=` / `--app=` / `--ssb` 的快捷方式）会被跳过——它们不产生独立时长
+  - 已安装的 UWP / MSIX 包（`PackageManager` + `AppxManifest.xml`），
+    只导入在开始菜单里可见的入口；图标从包内 Logo 导出为 PNG，路径记在 `apps.icon_source`
+  - 分类不出来的也导入，进「收件箱」由用户手动归类
 - 两列：
   - 左：`ListView` 应用列表（名称 Body Strong + 进程名/分类 Caption 次）
   - 右卡 **应用详情**：应用名(Subtitle) + 进程/分类(Body 次)

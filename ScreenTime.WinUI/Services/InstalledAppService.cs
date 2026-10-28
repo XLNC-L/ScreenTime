@@ -43,13 +43,14 @@ public static class InstalledAppService
             var lnkName = Path.GetFileNameWithoutExtension(lnk);
             if (lnkName.Length == 0 || ContainsAny(lnkName, SkipKeywords)) continue;
 
-            var target = ResolveTarget(lnk);
-            if (string.IsNullOrEmpty(target)) continue;
+            var resolved = ResolveShortcut(lnk);
+            if (resolved is not { } sc) continue;
+            var (target, args) = sc;
             if (!target.EndsWith(".exe", StringComparison.OrdinalIgnoreCase)) continue;
             if (!File.Exists(target)) continue;
 
-            // PWA（Chrome/Edge 应用）不算独立应用，时间归浏览器
-            if (PwaLaunchers.Contains(Path.GetFileNameWithoutExtension(target))) continue;
+            // 浏览器的「网页应用」(PWA) 不算独立应用，时间归浏览器
+            if (IsPwaShortcut(target, args)) continue;
 
             // 控制面板、注册表编辑器这类 Windows 自带小工具不算「已安装应用」，
             // 既不该出现在列表里，也不该被提前分类。
@@ -63,8 +64,9 @@ public static class InstalledAppService
             if (!seen.Add(target) || existing.Contains(target)) continue;
 
             var processName = Path.GetFileNameWithoutExtension(target);
+            // 分类不出来也导入：进「收件箱」由用户手动归类。
+            // 之前这里直接丢弃，导致一大批小众软件永远进不了列表。
             var category = CategoryService.Classify(processName, target, "", lnkName);
-            if (category == CategoryService.Unclassified) continue;
 
             var display = AppDisplayService.DisplayName(processName, lnkName);
             db.GetOrCreateApp(target, processName, display, "", category);
@@ -96,8 +98,28 @@ public static class InstalledAppService
         }
     }
 
-    /// <summary>用 WScript.Shell 解析 .lnk 的目标路径（不引入额外依赖）。</summary>
-    private static string? ResolveTarget(string lnkPath)
+    /// <summary>
+    /// 判断快捷方式是否指向浏览器的「网页应用」(PWA)。三个判据任一命中即算：
+    ///   1) 目标是 Chromium 系的 <c>&lt;brand&gt;_proxy.exe</c>——Chrome / Edge / Brave /
+    ///      Vivaldi / Opera 的 PWA 启动器都是这个命名规律；
+    ///   2) 参数带 <c>--app-id=</c>——Chromium 安装 PWA 时的固定写法；
+    ///   3) 参数带 <c>--app=</c> 或 <c>--ssb</c>——Edge / Firefox 的站点独立窗口。
+    /// 这类条目不该进应用列表：窗口实际由浏览器进程承载，永远不会有自己的时长。
+    /// </summary>
+    private static bool IsPwaShortcut(string target, string args)
+    {
+        var exe = Path.GetFileNameWithoutExtension(target);
+        if (exe.EndsWith("_proxy", StringComparison.OrdinalIgnoreCase)) return true;
+        if (PwaLaunchers.Contains(exe)) return true;
+
+        if (string.IsNullOrEmpty(args)) return false;
+        return args.Contains("--app-id=", StringComparison.OrdinalIgnoreCase)
+            || args.Contains("--app=", StringComparison.OrdinalIgnoreCase)
+            || args.Contains("--ssb", StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>用 WScript.Shell 解析 .lnk 的目标路径与参数（不引入额外依赖）。</summary>
+    private static (string Target, string Args)? ResolveShortcut(string lnkPath)
     {
         try
         {
@@ -106,14 +128,17 @@ public static class InstalledAppService
             var shell = Activator.CreateInstance(type);
             if (shell == null) return null;
 
-            var shortcut = type.InvokeMember("CreateShortcut", BindingFlags.InvokeMethod, null, shell, new object[] { lnkPath });
+            var shortcut = type.InvokeMember("CreateShortcut", BindingFlags.InvokeMethod, null,
+                shell, new object[] { lnkPath });
             if (shortcut == null) return null;
 
             var target = shortcut.GetType().InvokeMember("TargetPath",
                 BindingFlags.GetProperty, null, shortcut, null) as string;
+            var args = shortcut.GetType().InvokeMember("Arguments",
+                BindingFlags.GetProperty, null, shortcut, null) as string;
 
             if (string.IsNullOrEmpty(target)) return null;
-            return Environment.ExpandEnvironmentVariables(target.Trim().Trim('"'));
+            return (Environment.ExpandEnvironmentVariables(target.Trim().Trim('"')), args ?? "");
         }
         catch
         {
