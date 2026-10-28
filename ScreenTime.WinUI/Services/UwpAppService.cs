@@ -224,6 +224,8 @@ public static class UwpAppService
             using var source = await logoRef.OpenReadAsync();
             if (source.Size == 0) return "";
 
+            // 原样落盘。四周的透明留白由 AppIconService 在加载时裁掉——
+            // 放在加载侧，历史缓存也能立刻受益，不必等下次导入。
             using (var net = source.AsStreamForRead())
             using (var file = File.Create(target))
                 await net.CopyToAsync(file);

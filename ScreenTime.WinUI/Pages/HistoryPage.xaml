@@ -175,8 +175,8 @@
                                                 </Grid.ColumnDefinitions>
                                                 <Image
                                                     Grid.Column="0"
-                                                    Width="20"
-                                                    Height="20"
+                                                    Width="24"
+                                                    Height="24"
                                                     VerticalAlignment="Center"
                                                     Source="{Binding Icon}" />
                                                 <TextBlock

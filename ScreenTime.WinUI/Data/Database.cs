@@ -645,12 +645,12 @@ public sealed class Database
         cmd.ExecuteNonQuery();
     }
 
-    /// <summary>记录显式图标来源（仅在该字段为空时写入，避免覆盖已有的有效值）。</summary>
+    /// <summary>记录显式图标来源；路径变了就更新（例如图标缓存换版本）。</summary>
     private static void SyncIconSource(SqliteConnection c, int appId, string iconSource)
     {
         if (string.IsNullOrEmpty(iconSource)) return;
         using var cmd = c.CreateCommand();
-        cmd.CommandText = "UPDATE apps SET icon_source=$s WHERE id=$id AND icon_source=''";
+        cmd.CommandText = "UPDATE apps SET icon_source=$s WHERE id=$id AND icon_source<>$s";
         cmd.Parameters.AddWithValue("$s", iconSource);
         cmd.Parameters.AddWithValue("$id", appId);
         cmd.ExecuteNonQuery();
