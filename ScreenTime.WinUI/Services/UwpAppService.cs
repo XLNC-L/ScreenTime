@@ -108,6 +108,115 @@ public static class UwpAppService
     private static string Key(string process, string name) =>
         process.ToLowerInvariant() + "\u0001" + name.ToLowerInvariant();
 
+    /// <summary>WindowsApps 路径特征，用来识别 UWP 应用。</summary>
+    private const string WindowsAppsMarker = @"\WindowsApps\";
+
+    private static int _backfillRunning;
+    private static int _backfillPending;
+    private static DateTime _lastBackfillUtc = DateTime.MinValue;
+    private static readonly object BackfillGate = new();
+
+    /// <summary>
+    /// 请求后台补一次 UWP 图标。采集时新建的 UWP 应用没有 icon_source
+    ///（UWP 的 exe 通常不带图标资源），不补的话要等用户手动点「导入」才有图标。
+    /// 30 秒内最多跑一次，运行中再请求会合并成「跑完再来一轮」。
+    /// </summary>
+    public static void RequestBackfill(Database db)
+    {
+        lock (BackfillGate)
+        {
+            if (DateTime.UtcNow - _lastBackfillUtc < TimeSpan.FromSeconds(30)) return;
+            if (Interlocked.CompareExchange(ref _backfillRunning, 1, 0) != 0)
+            {
+                Interlocked.Exchange(ref _backfillPending, 1);
+                return;
+            }
+            _lastBackfillUtc = DateTime.UtcNow;
+        }
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                do
+                {
+                    Interlocked.Exchange(ref _backfillPending, 0);
+                    await BackfillIconsAsync(db);
+                }
+                while (Interlocked.Exchange(ref _backfillPending, 0) != 0);
+            }
+            finally
+            {
+                Interlocked.Exchange(ref _backfillRunning, 0);
+            }
+        });
+    }
+
+    /// <summary>给「已记录但还没有图标」的 UWP 应用补图标，返回补上的数量。</summary>
+    public static async Task<int> BackfillIconsAsync(Database db)
+    {
+        List<(int Id, string ProcessName, string IconSource)> targets;
+        try
+        {
+            // 缺图标，或者缓存文件已经被删了（用户清过 %AppData%\ScreenTime\icons）
+            targets = db.GetUwpIconCandidates(WindowsAppsMarker)
+                .Where(a => string.IsNullOrEmpty(a.IconSource) || !File.Exists(a.IconSource))
+                .ToList();
+        }
+        catch { return 0; }
+
+        // 没事可做就直接返回，别去枚举包（那要 1~2 秒）
+        if (targets.Count == 0) return 0;
+
+        PackageManager pm;
+        try { pm = new PackageManager(); }
+        catch { return 0; }
+
+        List<Package> packages;
+        try { packages = pm.FindPackagesForUser(string.Empty).ToList(); }
+        catch { return 0; }
+
+        var byProcess = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var pkg in packages)
+        {
+            try
+            {
+                if (pkg.IsFramework || pkg.IsResourcePackage) continue;
+                if (pkg.SignatureKind == PackageSignatureKind.System) continue;
+
+                var root = pkg.InstalledLocation?.Path;
+                if (string.IsNullOrEmpty(root)) continue;
+                var manifestPath = Path.Combine(root, "AppxManifest.xml");
+                if (!File.Exists(manifestPath)) continue;
+
+                var listEntries = await SafeAppListEntriesAsync(pkg);
+                if (listEntries.Count == 0) continue;
+                var visibleIds = VisibleAppIds(listEntries);
+                var familyName = SafeFamilyName(pkg);
+
+                foreach (var (exe, appId) in ReadApplications(manifestPath))
+                {
+                    if (visibleIds.Count > 0 && !visibleIds.Contains(appId)) continue;
+                    var process = Path.GetFileNameWithoutExtension(exe);
+                    if (string.IsNullOrEmpty(process) || byProcess.ContainsKey(process)) continue;
+
+                    var icon = await CacheLogoAsync(process, listEntries, appId, familyName);
+                    if (icon.Length > 0) byProcess[process] = icon;
+                }
+            }
+            catch
+            {
+                // 受保护包读不到，跳过
+            }
+        }
+
+        var filled = 0;
+        foreach (var (appId, process, _) in targets)
+            if (byProcess.TryGetValue(process, out var icon) && db.SetIconSource(appId, icon))
+                filled++;
+        return filled;
+    }
+
     /// <summary>读 AppxManifest.xml 里声明的可执行文件（一个包可以有多个应用入口）。</summary>
     private static IEnumerable<(string Exe, string AppId)> ReadApplications(string manifestPath)
     {

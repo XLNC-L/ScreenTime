@@ -163,6 +163,10 @@ public partial class App : Application
 
         Watcher.Start();
         HistoryImport.Start();
+
+        // UWP 应用的图标不在 exe 里：启动后补一次，
+        // 覆盖「用过了但还没手动导入」的应用，不必等用户点「导入已安装应用」。
+        _ = System.Threading.Tasks.Task.Run(() => UwpAppService.BackfillIconsAsync(Database));
         StartActivationListener();
 
         // 注意：WinUI 3 桌面应用的 LaunchActivatedEventArgs.Arguments 不包含命令行，

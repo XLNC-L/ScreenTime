@@ -39,6 +39,9 @@ public sealed class WatcherService : IDisposable
     /// <summary>用途标注要弹 TeachingTip，必须回到 UI 线程。</summary>
     private readonly DispatcherQueue? _uiQueue = DispatcherQueue.GetForCurrentThread();
 
+    /// <summary>本进程内已检查过图标的 app id，避免每个心跳都查库。</summary>
+    private readonly HashSet<int> _iconChecked = new();
+
     private bool _disposed;
 
     private OpenSegment? _fgSegment;
@@ -341,6 +344,14 @@ public sealed class WatcherService : IDisposable
         var category = CategoryService.Classify(info.ProcessName, info.ExePath, info.Company, info.Title);
         var appId = _db.GetOrCreateApp(info.ExePath, info.ProcessName, displayName, info.Company, category);
         _db.UpdateAppInfo(appId, displayName, info.Company);
+
+        // 用过的 UWP 应用如果没导入过，图标是空的（UWP 的 exe 通常不带图标资源）。
+        // 每个应用在本进程里只查一次，缺图标就请后台补一次，不必等用户手动「导入」。
+        if (_iconChecked.Add(appId) &&
+            info.ExePath.Contains(@"\WindowsApps\", StringComparison.OrdinalIgnoreCase) &&
+            !_db.AppHasIcon(appId))
+            UwpAppService.RequestBackfill(_db);
+
         var purpose = PurposeService.Resolve(_db.GetAppDefaultPurpose(appId), category);
         return (appId, category, purpose);
     }

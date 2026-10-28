@@ -483,6 +483,47 @@ public sealed class Database
         return drop.Count;
     }
 
+    /// <summary>
+    /// 取出路径匹配的应用及其图标来源，供后台判断哪些需要（重新）导出图标。
+    /// 返回全部而不是只返回缺图标的：调用方还要检查缓存文件是否已被删除。
+    /// </summary>
+    public List<(int Id, string ProcessName, string IconSource)> GetUwpIconCandidates(string pathMarker)
+    {
+        var list = new List<(int, string, string)>();
+        using var c = Open();
+        using var cmd = c.CreateCommand();
+        cmd.CommandText = """
+            SELECT id, process_name, COALESCE(icon_source, '') FROM apps
+            WHERE exe_path LIKE $m
+            """;
+        cmd.Parameters.AddWithValue("$m", "%" + pathMarker + "%");
+        using var r = cmd.ExecuteReader();
+        while (r.Read()) list.Add((r.GetInt32(0), r.GetString(1), r.GetString(2)));
+        return list;
+    }
+
+    /// <summary>该应用是否已有图标来源。</summary>
+    public bool AppHasIcon(int appId)
+    {
+        using var c = Open();
+        using var cmd = c.CreateCommand();
+        cmd.CommandText = "SELECT COALESCE(icon_source, '') FROM apps WHERE id=$id";
+        cmd.Parameters.AddWithValue("$id", appId);
+        return cmd.ExecuteScalar() is string s && s.Length > 0;
+    }
+
+    /// <summary>写入图标来源，返回是否真的改动了。</summary>
+    public bool SetIconSource(int appId, string iconSource)
+    {
+        if (string.IsNullOrEmpty(iconSource)) return false;
+        using var c = Open();
+        using var cmd = c.CreateCommand();
+        cmd.CommandText = "UPDATE apps SET icon_source=$s WHERE id=$id AND icon_source<>$s";
+        cmd.Parameters.AddWithValue("$s", iconSource);
+        cmd.Parameters.AddWithValue("$id", appId);
+        return cmd.ExecuteNonQuery() > 0;
+    }
+
     /// <summary>获取应用的默认用途（未设置返回空串）。</summary>
     public string GetAppDefaultPurpose(int appId)
     {
