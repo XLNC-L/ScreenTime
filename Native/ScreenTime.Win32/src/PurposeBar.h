@@ -24,6 +24,16 @@ public:
         m_needDataRebuild = true;
     }
 
+    // 窗口隐藏时释放全部 D2D 资源
+    void ReleaseResources()
+    {
+        m_titleBrush.Release(); m_bodyBrush.Release(); m_tickBrush.Release();
+        m_titleFmt.Release(); m_bodyFmt.Release(); m_legendFmt.Release();
+        m_segBrushes.clear();
+        m_deviceReady = false;
+        m_needDataRebuild = true;
+    }
+
     void CalculateLayout(const D2D1_RECT_F& bounds)
     {
         m_bounds = bounds;

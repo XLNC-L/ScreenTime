@@ -1,6 +1,9 @@
 // MainFrame.h — 主窗口（WTL）
 //
-// M2 阶段一：Direct2D 自绘主界面（环形图）。托盘事件转发保持 M1 逻辑。
+// M2 阶段二：内存优化 + 真实数据。
+//   - D2D 懒初始化：托盘常驻时零渲染内存，窗口首次显示才建渲染目标
+//   - 关闭 = 隐藏到托盘（释放全部 D2D 资源），托盘点击再显示
+//   - 数据层 TodayRepository 只读 SQLite（对齐 WinUI 版口径），--demo 用演示数据
 
 #pragma once
 
@@ -14,6 +17,7 @@
 #include "RankList.h"
 #include "PurposeBar.h"
 #include "OverviewCards.h"
+#include "TodayRepository.h"
 
 class MainFrame : public CWindowImpl<MainFrame>
 {
@@ -33,134 +37,80 @@ public:
         MESSAGE_HANDLER(TrayIcon::kCmdExit, OnExit)
     END_MSG_MAP()
 
-    LRESULT OnTray(UINT, WPARAM wParam, LPARAM lParam, BOOL&)
+    LRESULT OnTray(UINT, WPARAM wParam, LPARAM lParam, BOOL& bHandled)
     {
+        bHandled = TRUE;
         return m_tray.OnTray(TrayIcon::WM_TRAY, wParam, lParam);
     }
 
-    LRESULT OnOpen(UINT, WPARAM, LPARAM, BOOL&)
+    LRESULT OnOpen(UINT, WPARAM, LPARAM, BOOL& bHandled)
     {
+        bHandled = TRUE;
+        // 显示前确保渲染与数据就绪（隐藏期间资源已全部释放）
+        EnsureD2D();
         ::ShowWindow(m_hWnd, SW_SHOW);
         ::SetForegroundWindow(m_hWnd);
         return 0;
     }
 
-    LRESULT OnExit(UINT, WPARAM, LPARAM, BOOL&)
+    LRESULT OnExit(UINT, WPARAM, LPARAM, BOOL& bHandled)
     {
+        bHandled = TRUE;
         ::PostMessageW(m_hWnd, WM_CLOSE, 0, 0);
         return 0;
     }
 
-    LRESULT OnCreate(UINT, WPARAM, LPARAM, BOOL&)
+    LRESULT OnCreate(UINT, WPARAM, LPARAM, BOOL& bHandled)
     {
+        bHandled = TRUE;
         ApplyMica();
         m_tray.Create(m_hWnd);
-
-        // M2 阶段一：演示数据（后续接 SQLite 真实读取，空数据走占位图）
-        if (!m_d2d.Create(m_hWnd))
-        {
-            // 记录失败原因到 %TEMP%\screen32_d2d.log，便于排查
-            wchar_t tmpPath[MAX_PATH]{}, logPath[MAX_PATH]{};
-            if (::GetEnvironmentVariableW(L"TEMP", tmpPath, MAX_PATH) > 0)
-            {
-                wcscpy_s(logPath, tmpPath);
-                wcscat_s(logPath, L"\\screen32_d2d.log");
-                wchar_t msg[160];
-                swprintf_s(msg, L"CreateHwndRenderTarget HRESULT=0x%08X", m_d2d.LastHr());
-                FILE* f = nullptr;
-                if (_wfopen_s(&f, logPath, L"w") == 0 && f)
-                {
-                    fwprintf(f, L"%s\n", msg);
-                    fclose(f);
-                }
-            }
-            return -1; // D2D 不可用，窗口关闭（极简版依赖 D2D 自绘）
-        }
-
-        // 分类占比（图例模式：小环形图 + 右侧图例）
-        std::vector<DonutChart::Segment> segs;
-        segs.push_back({ 46.f, Palette::Teal(),   L"Microsoft Edge" });
-        segs.push_back({ 32.f, Palette::Violet(), L"WeChat" });
-        segs.push_back({ 21.f, Palette::Amber(),  L"Doubao" });
-        segs.push_back({ 12.f, Palette::Pink(),   L"IDM" });
-        segs.push_back({ 9.f,  Palette::Slate(),  L"其他" });
-        m_donut.SetSegments(std::move(segs));
-        m_donut.SetEmpty(false);
-        m_donut.SetLegendMode(true);
-
-        // 用途分布
-        std::vector<PurposeBar::PurposeItem> purposes;
-        purposes.push_back({ L"社交媒体", 46.f, Palette::Blue() });
-        purposes.push_back({ L"浏览网页", 37.f, Palette::Teal() });
-        purposes.push_back({ L"办公效率", 10.f, Palette::Sage() });
-        purposes.push_back({ L"视频媒体", 7.f,  Palette::Pink() });
-        m_purpose.SetItems(std::move(purposes));
-
-        // 时间线演示时段（合计 120 分钟，与环形图一致；分钟 0-1440）
-        std::vector<Timeline::TimeSlot> slots;
-        slots.push_back({ 550.f, 576.f, Palette::Teal(),   L"Microsoft Edge" });
-        slots.push_back({ 600.f, 632.f, Palette::Violet(), L"WeChat" });
-        slots.push_back({ 750.f, 762.f, Palette::Pink(),   L"IDM" });
-        slots.push_back({ 860.f, 881.f, Palette::Amber(),  L"Doubao" });
-        slots.push_back({ 1140.f, 1149.f, Palette::Slate(), L"其他" });
-        slots.push_back({ 1205.f, 1225.f, Palette::Teal(), L"Microsoft Edge" });
-        m_timeline.SetSlots(std::move(slots));
-        m_timeline.SetEmpty(false);
-
-        // 排行演示数据
-        std::vector<RankList::RankItem> ranks;
-        ranks.push_back({ L"Microsoft Edge", 46.f, Palette::Teal() });
-        ranks.push_back({ L"WeChat", 32.f, Palette::Violet() });
-        ranks.push_back({ L"Doubao", 21.f, Palette::Amber() });
-        ranks.push_back({ L"IDM", 12.f, Palette::Pink() });
-        ranks.push_back({ L"其他", 9.f, Palette::Slate() });
-        m_rank.SetItems(std::move(ranks));
-        m_rank.SetEmpty(false);
-
-        // 概览四卡
-        OverviewCards::Card cards[4] = {
-            { L"今日总时长", L"2:00" },
-            { L"前台时长",   L"1:50" },
-            { L"后台播放",   L"0:10" },
-            { L"亮屏时长",   L"3:20" },
-        };
-        m_cards.SetData(cards, 4);
+        // D2D 懒初始化：首帧绘制（OnPaint）时按需创建
         return 0;
     }
 
-    LRESULT OnSize(UINT, WPARAM, LPARAM lParam, BOOL&)
+    LRESULT OnSize(UINT, WPARAM, LPARAM lParam, BOOL& bHandled)
     {
-        const UINT cx = LOWORD(lParam);
-        const UINT cy = HIWORD(lParam);
-        m_d2d.Resize(cx, cy);
+        bHandled = TRUE;
+        if (m_d2d.RT())
+            m_d2d.Resize(LOWORD(lParam), HIWORD(lParam));
         ::InvalidateRect(m_hWnd, nullptr, TRUE);
         return 0;
     }
 
     // 禁用系统擦背景，避免闪烁（D2D 自己 Clear）
-    LRESULT OnEraseBkgnd(UINT, WPARAM, LPARAM, BOOL&)
+    LRESULT OnEraseBkgnd(UINT, WPARAM, LPARAM, BOOL& bHandled)
     {
+        bHandled = TRUE;
         return TRUE;
     }
 
-    LRESULT OnClose(UINT, WPARAM, LPARAM, BOOL&)
+    LRESULT OnClose(UINT, WPARAM, LPARAM, BOOL& bHandled)
     {
-        // M1 阶段关闭即退出；后续可改为「最小化到托盘」
-        ::DestroyWindow(m_hWnd);
+        bHandled = TRUE; // 关键：不设 TRUE 会继续走 DefWindowProc，默认销毁窗口
+        // 关闭 = 最小化到托盘；释放全部渲染资源，内存回落
+        ::ShowWindow(m_hWnd, SW_HIDE);
+        ReleaseD2D();
         return 0;
     }
 
-    LRESULT OnDestroy(UINT, WPARAM, LPARAM, BOOL&)
+    LRESULT OnDestroy(UINT, WPARAM, LPARAM, BOOL& bHandled)
     {
+        bHandled = TRUE; // 关键：不设 TRUE 则 PostQuitMessage 不执行，变幽灵进程
         m_tray.Destroy();
+        ReleaseD2D();
         ::PostQuitMessage(0);
         return 0;
     }
 
-    LRESULT OnPaint(UINT, WPARAM, LPARAM, BOOL&)
+    LRESULT OnPaint(UINT, WPARAM, LPARAM, BOOL& bHandled)
     {
+        bHandled = TRUE;
         PAINTSTRUCT ps;
         ::BeginPaint(m_hWnd, &ps);
+
+        // 懒初始化兜底：--show 直接显示时首帧在这里建 D2D + 读数据
+        if (!m_d2d.RT()) EnsureD2D();
 
         if (m_d2d.RT())
         {
@@ -258,6 +208,229 @@ private:
     RankList m_rank;
     PurposeBar m_purpose;
     OverviewCards m_cards;
+
+    // 数据保活：组件只持有 label 指针，wstring 生命周期挂在 MainFrame
+    TodayResult m_today;
+
+    // ---- 渲染生命周期（懒初始化 / 隐藏释放）----
+
+    void EnsureD2D()
+    {
+        if (m_d2d.RT()) return;
+
+        if (!m_d2d.Create(m_hWnd))
+        {
+            // 记录失败原因到 %TEMP%\screen32_d2d.log，便于排查
+            wchar_t tmpPath[MAX_PATH]{}, logPath[MAX_PATH]{};
+            if (::GetEnvironmentVariableW(L"TEMP", tmpPath, MAX_PATH) > 0)
+            {
+                wcscpy_s(logPath, tmpPath);
+                wcscat_s(logPath, L"\\screen32_d2d.log");
+                wchar_t msg[160];
+                swprintf_s(msg, L"CreateHwndRenderTarget HRESULT=0x%08X", m_d2d.LastHr());
+                FILE* f = nullptr;
+                if (_wfopen_s(&f, logPath, L"w") == 0 && f)
+                {
+                    fwprintf(f, L"%s\n", msg);
+                    fclose(f);
+                }
+            }
+            return; // 窗口继续显示 GDI 兜底文案，不退出
+        }
+
+        LoadData();
+        ::InvalidateRect(m_hWnd, nullptr, TRUE);
+    }
+
+    void ReleaseD2D()
+    {
+        m_donut.ReleaseResources();
+        m_timeline.ReleaseResources();
+        m_rank.ReleaseResources();
+        m_purpose.ReleaseResources();
+        m_cards.ReleaseResources();
+
+        m_cardBrush.Release();
+        m_strokeBrush.Release();
+        m_textBrush.Release();
+        m_dateBrush.Release();
+        m_sectionFmt.Release();
+        m_headerFmt.Release();
+        m_dateFmt.Release();
+
+        m_today = TodayResult{}; // 一并释放数据（wstring）
+        m_d2d.ReleaseAll();
+
+        // 托盘常驻时把工作集修剪到最小（类似任务管理器最小化行为），
+        // 需要时由 OS 按需换回，显示时 D2D 重建会自然重新驻留
+        HANDLE proc = ::GetCurrentProcess();
+        ::SetProcessWorkingSetSize(proc, (SIZE_T)-1, (SIZE_T)-1);
+    }
+
+    // ---- 数据加载：真实库（默认） / 演示数据（--demo）----
+
+    void LoadData()
+    {
+        if (::wcsstr(::GetCommandLineW(), L"--demo") != nullptr)
+        {
+            LoadDemoData();
+            return;
+        }
+
+        TodayRepository repo;
+        m_today = repo.Load();
+        if (!m_today.ok)
+        {
+            SetEmptyAll();
+            // 写日志便于排查（如数据库被占用/损坏）
+            wchar_t tmpPath[MAX_PATH]{}, logPath[MAX_PATH]{};
+            if (::GetEnvironmentVariableW(L"TEMP", tmpPath, MAX_PATH) > 0)
+            {
+                wcscpy_s(logPath, tmpPath);
+                wcscat_s(logPath, L"\\screen32_db.log");
+                FILE* f = nullptr;
+                if (_wfopen_s(&f, logPath, L"w") == 0 && f)
+                {
+                    std::wstring werr = Utf8ToWide(m_today.error.c_str());
+                    fwprintf(f, L"%s\n", werr.c_str());
+                    fclose(f);
+                }
+            }
+            return;
+        }
+
+        // 概览四卡（分钟粒度，后台 = 总 − 前台）
+        const double bgMin = std::floor(m_today.totalSec / 60.0) - std::floor(m_today.fgSec / 60.0);
+        OverviewCards::Card cards[4] = {
+            { L"今日总时长", FormatDurationMinute(m_today.totalSec) },
+            { L"前台时长",   FormatDurationMinute(m_today.fgSec) },
+            { L"后台播放",   FormatDurationMinute(std::max(0.0, bgMin) * 60.0) },
+            { L"亮屏时长",   FormatDurationMinute(m_today.displaySec) },
+        };
+        m_cards.SetData(cards, 4);
+
+        // 分类占比（环形图 + 图例；按分类色）
+        std::vector<DonutChart::Segment> segs;
+        for (const auto& c : m_today.categories)
+        {
+            // Narrow 返回临时窄串，调用链在同一完整表达式内完成，指针安全
+            Palette::GradientPair g = Palette::CategoryColor(Narrow(c.name).c_str());
+            segs.push_back({ (float)c.seconds, g, c.name.c_str() });
+        }
+        m_donut.SetSegments(std::move(segs));
+        m_donut.SetEmpty(m_today.categories.empty());
+        m_donut.SetLegendMode(true);
+
+        // 用途分布（按用途色；PurposeBar 期望 0-100 百分比）
+        float purposeSum = 0.f;
+        for (const auto& p : m_today.purposes) purposeSum += (float)p.seconds;
+        std::vector<PurposeBar::PurposeItem> purposes;
+        for (const auto& p : m_today.purposes)
+        {
+            const float pct = purposeSum > 0.f ? (float)p.seconds / purposeSum * 100.f : 0.f;
+            purposes.push_back({ p.name.c_str(), pct,
+                                 Palette::PurposeColor(Narrow(p.name).c_str()) });
+        }
+        m_purpose.SetItems(std::move(purposes));
+
+        // 应用排行（轮换色板，按时长降序；RankList 期望分钟值）
+        std::vector<RankList::RankItem> ranks;
+        static const Palette::GradientPair kRotate[] = {
+            Palette::Teal(), Palette::Violet(), Palette::Amber(), Palette::Pink(),
+            Palette::Blue(), Palette::Sage(),  Palette::Slate(),
+        };
+        for (size_t i = 0; i < m_today.ranks.size(); ++i)
+            ranks.push_back({ m_today.ranks[i].name.c_str(),
+                              (float)(m_today.ranks[i].seconds / 60.0),
+                              kRotate[i % 7] });
+        m_rank.SetItems(std::move(ranks));
+        m_rank.SetEmpty(m_today.ranks.empty());
+
+        // 时间线（前台片段，自适应范围 + 当前时间游标）
+        std::vector<Timeline::TimeSlot> slots;
+        for (const auto& s : m_today.slots)
+            slots.push_back({ (float)s.startMin, (float)s.endMin,
+                              Palette::CategoryColor(Narrow(s.category).c_str()), s.app.c_str() });
+        m_timeline.SetSlots(std::move(slots));
+        m_timeline.SetEmpty(m_today.slots.empty());
+    }
+
+    // 演示数据（--demo，用于无库/空库环境跑通布局）
+    void LoadDemoData()
+    {
+        std::vector<DonutChart::Segment> segs;
+        segs.push_back({ 46.f, Palette::Teal(),   L"Microsoft Edge" });
+        segs.push_back({ 32.f, Palette::Violet(), L"WeChat" });
+        segs.push_back({ 21.f, Palette::Amber(),  L"Doubao" });
+        segs.push_back({ 12.f, Palette::Pink(),   L"IDM" });
+        segs.push_back({ 9.f,  Palette::Slate(),  L"其他" });
+        m_donut.SetSegments(std::move(segs));
+        m_donut.SetEmpty(false);
+        m_donut.SetLegendMode(true);
+
+        std::vector<PurposeBar::PurposeItem> purposes;
+        purposes.push_back({ L"社交媒体", 46.f, Palette::Blue() });
+        purposes.push_back({ L"浏览网页", 37.f, Palette::Teal() });
+        purposes.push_back({ L"办公效率", 10.f, Palette::Sage() });
+        purposes.push_back({ L"视频媒体", 7.f,  Palette::Pink() });
+        m_purpose.SetItems(std::move(purposes));
+
+        std::vector<Timeline::TimeSlot> slots;
+        slots.push_back({ 550.f, 576.f, Palette::Teal(),   L"Microsoft Edge" });
+        slots.push_back({ 600.f, 632.f, Palette::Violet(), L"WeChat" });
+        slots.push_back({ 750.f, 762.f, Palette::Pink(),   L"IDM" });
+        slots.push_back({ 860.f, 881.f, Palette::Amber(),  L"Doubao" });
+        slots.push_back({ 1140.f, 1149.f, Palette::Slate(), L"其他" });
+        slots.push_back({ 1205.f, 1225.f, Palette::Teal(), L"Microsoft Edge" });
+        m_timeline.SetSlots(std::move(slots));
+        m_timeline.SetEmpty(false);
+
+        std::vector<RankList::RankItem> ranks;
+        ranks.push_back({ L"Microsoft Edge", 46.f, Palette::Teal() });
+        ranks.push_back({ L"WeChat", 32.f, Palette::Violet() });
+        ranks.push_back({ L"Doubao", 21.f, Palette::Amber() });
+        ranks.push_back({ L"IDM", 12.f, Palette::Pink() });
+        ranks.push_back({ L"其他", 9.f, Palette::Slate() });
+        m_rank.SetItems(std::move(ranks));
+        m_rank.SetEmpty(false);
+
+        OverviewCards::Card cards[4] = {
+            { L"今日总时长", L"2:00" },
+            { L"前台时长",   L"1:50" },
+            { L"后台播放",   L"0:10" },
+            { L"亮屏时长",   L"3:20" },
+        };
+        m_cards.SetData(cards, 4);
+    }
+
+    void SetEmptyAll()
+    {
+        m_donut.SetSegments({});
+        m_donut.SetEmpty(true);
+        m_donut.SetLegendMode(true);
+        m_purpose.SetItems({});
+        m_timeline.SetSlots({});
+        m_timeline.SetEmpty(true);
+        m_rank.SetItems({});
+        m_rank.SetEmpty(true);
+        OverviewCards::Card cards[4] = {
+            { L"今日总时长", L"暂无数据" },
+            { L"前台时长",   L"暂无数据" },
+            { L"后台播放",   L"暂无数据" },
+            { L"亮屏时长",   L"暂无数据" },
+        };
+        m_cards.SetData(cards, 4);
+    }
+
+    // wstring → 窄串（utf-8），用于分类/用途名查颜色
+    static std::string Narrow(const std::wstring& w)
+    {
+        if (w.empty()) return "";
+        const int n = ::WideCharToMultiByte(CP_UTF8, 0, w.c_str(), -1, nullptr, 0, nullptr, nullptr);
+        std::string s(n - 1, '\0');
+        ::WideCharToMultiByte(CP_UTF8, 0, w.c_str(), -1, s.data(), n, nullptr, nullptr);
+        return s;
+    }
 
     // 卡片通用样式（复刻原版 Border：圆角 8、CardBackground + 1px 描边）
     void DrawCard(const D2D1_RECT_F& rc)

@@ -7,14 +7,15 @@
 #pragma once
 
 #include "D2DContext.h"
+#include <string>
 
 class OverviewCards
 {
 public:
     struct Card
     {
-        const wchar_t* title = L"";
-        const wchar_t* value = L"";
+        std::wstring title;
+        std::wstring value;
     };
 
     void SetData(const Card* cards, int count)
@@ -38,6 +39,14 @@ public:
         }
     }
 
+    // 窗口隐藏时释放全部 D2D 资源
+    void ReleaseResources()
+    {
+        m_cardBrush.Release(); m_strokeBrush.Release(); m_titleBrush.Release();
+        m_valueBrush.Release(); m_titleFmt.Release(); m_valueFmt.Release();
+        m_deviceReady = false;
+    }
+
     void Render(D2DContext& ctx)
     {
         ID2D1RenderTarget* rt = ctx.RT();
@@ -54,13 +63,13 @@ public:
 
             // 标题（12px 次级）
             D2D1_RECT_F rcTitle = { c.left + 16.f, c.top + 12.f, c.right - 16.f, c.top + 28.f };
-            rt->DrawText(m_cards[i].title, (UINT32)wcslen(m_cards[i].title), m_titleFmt,
+            rt->DrawText(m_cards[i].title.c_str(), (UINT32)m_cards[i].title.length(), m_titleFmt,
                          rcTitle, m_titleBrush,
                          D2D1_DRAW_TEXT_OPTIONS_NONE, DWRITE_MEASURING_MODE_NATURAL);
 
             // 数值（28px 半粗主色）
             D2D1_RECT_F rcValue = { c.left + 16.f, c.top + 32.f, c.right - 16.f, c.bottom - 8.f };
-            rt->DrawText(m_cards[i].value, (UINT32)wcslen(m_cards[i].value), m_valueFmt,
+            rt->DrawText(m_cards[i].value.c_str(), (UINT32)m_cards[i].value.length(), m_valueFmt,
                          rcValue, m_valueBrush,
                          D2D1_DRAW_TEXT_OPTIONS_NONE, DWRITE_MEASURING_MODE_NATURAL);
         }

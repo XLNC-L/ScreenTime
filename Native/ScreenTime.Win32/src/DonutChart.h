@@ -70,6 +70,18 @@ public:
     // 图例模式（复刻原版「分类占比」卡）：只画环，不画中心文字；图例用 RenderLegend 单独画
     void SetLegendMode(bool on) { m_legendMode = on; }
 
+    // 窗口隐藏时释放全部 D2D 资源
+    void ReleaseResources()
+    {
+        m_trackBrush.Release(); m_numBrush.Release(); m_labelBrush.Release();
+        m_emptyIconBrush.Release(); m_shadow.Release(); m_roundCap.Release();
+        m_textBig.Release(); m_textSmall.Release();
+        m_legendNameFmt.Release(); m_legendPctFmt.Release();
+        m_gradients.clear(); m_geos.clear();
+        m_deviceReady = false;
+        m_needSegRebuild = true;
+    }
+
     // 布局：尺寸变化时调用；更新半径并标记数据资源待重建
     void CalculateLayout(const D2D1_RECT_F& bounds)
     {

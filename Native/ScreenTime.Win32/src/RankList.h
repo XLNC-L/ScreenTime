@@ -27,6 +27,16 @@ public:
 
     void SetEmpty(bool empty) { m_empty = empty; }
 
+    // 窗口隐藏时释放全部 D2D 资源
+    void ReleaseResources()
+    {
+        m_titleBrush.Release(); m_textBrush.Release(); m_timeBrush.Release();
+        m_trackBrush.Release(); m_titleFmt.Release(); m_nameFmt.Release(); m_timeFmt.Release();
+        m_barGradients.clear();
+        m_deviceReady = false;
+        m_needDataRebuild = true;
+    }
+
     void CalculateLayout(const D2D1_RECT_F& bounds)
     {
         m_bounds = bounds;
@@ -91,10 +101,10 @@ public:
             rt->DrawText(item.name, (UINT32)wcslen(item.name), m_nameFmt, rcName, m_textBrush,
                          D2D1_DRAW_TEXT_OPTIONS_NONE, DWRITE_MEASURING_MODE_NATURAL);
 
-            // 时长（右对齐于行右缘）
+            // 时长（右对齐于行右缘；统一「X 小时 Y 分 / X 分」格式）
             wchar_t buf[32];
             if (item.minutes >= 60.f)
-                swprintf_s(buf, L"%d:%02d", (int)(item.minutes / 60.f), (int)item.minutes % 60);
+                swprintf_s(buf, L"%d 小时 %d 分", (int)(item.minutes / 60.f), (int)item.minutes % 60);
             else
                 swprintf_s(buf, L"%d 分", (int)item.minutes);
             D2D1_RECT_F rcTime = { m_bounds.right - 100.f, y, m_bounds.right, y + 34.f };

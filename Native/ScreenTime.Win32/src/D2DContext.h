@@ -15,6 +15,7 @@
 #include <dwrite.h>
 #include <dwmapi.h>
 #include <atlbase.h>
+#include <string_view>
 
 #pragma comment(lib, "d2d1.lib")
 #pragma comment(lib, "dwrite.lib")
@@ -38,6 +39,38 @@ namespace Palette
     inline GradientPair Blue()   { return { D2D1::ColorF(0x7FBBFF), D2D1::ColorF(0x4D90E8) }; }
     inline GradientPair Sage()   { return { D2D1::ColorF(0x9AD99B), D2D1::ColorF(0x55B06B) }; }
     inline GradientPair Slate()  { return { D2D1::ColorF(0x7A8190), D2D1::ColorF(0x4E5563) }; }
+
+    // 由亮端色生成渐变对（暗端 = 亮端 × 0.65，柔和过渡）
+    inline GradientPair PairFrom(D2D1_COLOR_F a)
+    {
+        return { a, D2D1::ColorF(a.r * 0.65f, a.g * 0.65f, a.b * 0.65f, a.a) };
+    }
+
+    // 一级分类色板（复刻 WinUI 版 CategoryPalette Dark 主题）
+    inline GradientPair CategoryColor(const char* name)
+    {
+        const std::string_view n = name ? name : "";
+        if (n == "开发与创作") return PairFrom(D2D1::ColorF(0xC4B5FD));
+        if (n == "办公与文档") return PairFrom(D2D1::ColorF(0xFFB900));
+        if (n == "通讯与协作") return PairFrom(D2D1::ColorF(0x4DD9E6));
+        if (n == "浏览与资讯") return PairFrom(D2D1::ColorF(0x4CC2FF));
+        if (n == "影音与娱乐") return PairFrom(D2D1::ColorF(0xFF99A4));
+        if (n == "游戏")       return PairFrom(D2D1::ColorF(0x6CCB5F));
+        if (n == "社交与购物") return PairFrom(D2D1::ColorF(0xE689EE));
+        if (n == "系统与工具") return PairFrom(D2D1::ColorF(0xA1A1A1));
+        return PairFrom(D2D1::ColorF(0x989BA5)); // 未分类
+    }
+
+    // 用途色板（复刻 WinUI 版 PurposeBrushFor Dark 主题）
+    inline GradientPair PurposeColor(const char* name)
+    {
+        const std::string_view n = name ? name : "";
+        if (n == "工作学习") return PairFrom(D2D1::ColorF(0x4CC2FF));
+        if (n == "生活事务") return PairFrom(D2D1::ColorF(0x4DD9E6));
+        if (n == "消遣娱乐") return PairFrom(D2D1::ColorF(0xFFB900));
+        if (n == "社交通讯") return PairFrom(D2D1::ColorF(0xC4B5FD));
+        return PairFrom(D2D1::ColorF(0x989BA5)); // 未判定
+    }
 }
 
 class D2DContext
@@ -65,6 +98,15 @@ public:
     }
 
     HRESULT LastHr() const { return m_lastHr; }
+
+    // 窗口隐藏到托盘时完整释放：渲染目标 + D2D/DWrite 工厂全部放掉，
+    // 内存占用回落到纯托盘状态；重新显示时 Create 会重建
+    void ReleaseAll()
+    {
+        m_rt.Release();
+        m_factory.Release();
+        m_dwFactory.Release();
+    }
 
     void Resize(UINT cx, UINT cy)
     {
