@@ -5,6 +5,9 @@ ScreenTime-WinUI/
 ScreenTime.WinUI/bin/
 ScreenTime.WinUI/obj/
 
+# 安装包产物
+dist/
+
 # 测试产物
 TestResults/
 *.trx

@@ -7,21 +7,34 @@ Windows 本地屏幕时间统计工具。常驻托盘，后台记录前台窗口
 
 ---
 
-## 快速开始
+## 安装
 
-**环境要求**：Windows 10 1809+ / 11，x64。需要 .NET 8 SDK（构建）。
-运行需要 .NET 8 桌面运行时；Windows App SDK 已随发布目录自带，无需单独安装。
+从 [Releases](../../releases) 下载 `ScreenTime-Setup-x.y.z.exe`，双击安装。
 
-**不需要任何环境变量、配置文件或账号。**
+- **装到用户目录**（`%LocalAppData%\Programs\ScreenTime`），**全程不需要管理员权限、不弹 UAC**
+- 需要 **.NET 8 Runtime（x64）**；安装向导会检测，缺了会给出下载链接
+- 安装包约 22 MB（压缩后），装完约 95 MB / 281 个文件
+
+> 未做代码签名，首次运行 Windows 可能提示"未知发布者"，点「更多信息 → 仍要运行」即可。
+> 可对照 Release 里的 `SHA256SUMS.txt` 校验下载的文件。
+
+### 卸载
+
+设置 → 应用 → ScreenTime → 卸载（或开始菜单里右键卸载）。卸载时会弹窗说明，
+可勾选是否**同时删除使用数据**（`%AppData%\ScreenTime`，默认保留）。
+
+⚠️ 卸载前请先在托盘图标上右键退出，否则程序文件被占用会导致卸载失败。
+
+## 从源码构建
 
 ```bat
-git clone <repo> && cd new-chat
 dotnet build ScreenTime.sln -c Release      :: 构建三个工程
 dotnet test  ScreenTime.sln -c Release      :: 跑单元测试
 build.cmd                                   :: 构建 + 发布到 ScreenTime-WinUI\
 ```
 
-产物在 `ScreenTime-WinUI\ScreenTime.exe`，双击即可运行（首次启动会进托盘）。
+**环境要求**：Windows 10 1809+ / 11，x64，.NET 8 SDK。
+**不需要任何环境变量、配置文件或账号。**
 
 手动发布（等价于 `build.cmd`）：
 
@@ -29,6 +42,15 @@ build.cmd                                   :: 构建 + 发布到 ScreenTime-Win
 dotnet publish ScreenTime.WinUI\ScreenTime.WinUI.csproj -c Release -r win-x64 ^
     --self-contained false -o ScreenTime-WinUI
 ```
+
+打安装包（需要 [Inno Setup 6.3+](https://jrsoftware.org/isdl.php)）：
+
+```bat
+ISCC.exe /DAppVersion=1.0.0 installer\ScreenTime.iss
+:: 产物：dist\ScreenTime-Setup-1.0.0.exe
+```
+
+打 tag 推上去会由 `.github/workflows/release.yml` 自动完成上面全部步骤并挂到 Release。
 
 ## 项目结构
 

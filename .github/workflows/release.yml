@@ -1,0 +1,65 @@
+name: Release
+
+# 打 tag（v1.0.0）时自动：跑测试 → 发布 → 打安装包 → 挂到 Release 附件
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: 解析版本号
+        id: ver
+        shell: pwsh
+        run: |
+          $v = "${{ github.ref_name }}" -replace '^v', ''
+          if ($v -notmatch '^\d+\.\d+\.\d+') { $v = '0.0.0-dev' }
+          "version=$v" >> $env:GITHUB_OUTPUT
+          Write-Host "版本号: $v"
+
+      - name: 单元测试
+        run: dotnet test ScreenTime.sln -c Release
+
+      - name: 发布（框架依赖，x64）
+        run: >
+          dotnet publish ScreenTime.WinUI/ScreenTime.WinUI.csproj
+          -c Release -r win-x64 --self-contained false
+          -o ScreenTime-WinUI
+          -p:Version=${{ steps.ver.outputs.version }}
+
+      - name: 安装 Inno Setup
+        run: choco install innosetup --no-progress -y
+
+      - name: 编译安装包
+        shell: pwsh
+        run: |
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" `
+            /DAppVersion=${{ steps.ver.outputs.version }} installer\ScreenTime.iss
+
+      - name: 计算校验值
+        shell: pwsh
+        run: |
+          $f = Get-ChildItem dist\ScreenTime-Setup-*.exe | Select-Object -First 1
+          "$($f.Name)  $((Get-FileHash $f.FullName -Algorithm SHA256).Hash)" |
+            Out-File -FilePath dist\SHA256SUMS.txt -Encoding utf8
+          Get-Content dist\SHA256SUMS.txt
+
+      - name: 上传到 Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/ScreenTime-Setup-*.exe
+            dist/SHA256SUMS.txt
+          generate_release_notes: true
