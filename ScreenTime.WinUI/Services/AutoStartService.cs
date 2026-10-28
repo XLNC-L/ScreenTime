@@ -33,14 +33,51 @@ public static class AutoStartService
         }
     }
 
-    public static bool Enable()
+    /// <summary>当前任务是否以最高权限运行（读任务 XML 里的 RunLevel）。</summary>
+    public static bool IsRunAsAdmin()
+    {
+        var xml = QueryTaskXml();
+        return xml != null && xml.Contains("HighestAvailable", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string? QueryTaskXml()
+    {
+        try
+        {
+            var psi = new ProcessStartInfo("schtasks", $"/Query /TN \"{TaskName}\" /XML")
+            {
+                CreateNoWindow = true,
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true
+            };
+            using var p = Process.Start(psi);
+            if (p == null) return null;
+            var output = p.StandardOutput.ReadToEnd();
+            if (!p.WaitForExit(5000)) return null;
+            return p.ExitCode == 0 ? output : null;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// 创建/重建开机自启任务。
+    /// <paramref name="runAsAdmin"/> 默认 false：实测普通权限下同样能读到提升权限应用的
+    /// 进程名、exe 路径和窗口标题（GetWindowText 跨完整性可读），
+    /// 而 /RL HIGHEST 会让创建任务必须提权、每次登录都以管理员身份运行，代价大于收益。
+    /// </summary>
+    public static bool Enable(bool runAsAdmin = false)
     {
         var exe = Environment.ProcessPath;
         if (string.IsNullOrEmpty(exe)) return false;
 
-        var args = $"/Create /TN \"{TaskName}\" /SC ONLOGON /RL HIGHEST /F /TR \"\\\"{exe}\\\" --silent\"";
+        var level = runAsAdmin ? " /RL HIGHEST" : "";
+        var args = $"/Create /TN \"{TaskName}\" /SC ONLOGON{level} /F /TR \"\\\"{exe}\\\" --silent\"";
 
-        // 先静默尝试（进程已是管理员时直接成功）；权限不足时提升权限再试一次。
+        // 先静默尝试（普通权限任务通常无需提权）；权限不足时提升权限再试一次。
         return RunSchtasks(args, elevate: false) || RunSchtasks(args, elevate: true);
     }
 

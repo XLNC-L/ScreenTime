@@ -24,6 +24,8 @@ public partial class SettingsPage : Page
         var db = App.Current.Database;
 
         AutoStartSwitch.IsOn = AutoStartService.IsEnabled();
+        AdminSwitch.IsOn = AutoStartService.IsRunAsAdmin();
+        AdminSwitch.IsEnabled = AutoStartSwitch.IsOn;
         AudioSwitch.IsOn = db.GetSetting("audio_enabled", "true") != "false";
         PurposeAskSwitch.IsOn = db.GetSetting("purpose_ask_enabled", "false") == "true";
         BrowserTabSwitch.IsOn = db.GetSetting("browser_tab_enabled", "true") != "false";
@@ -45,14 +47,40 @@ public partial class SettingsPage : Page
     {
         if (_loading) return;
         var enable = AutoStartSwitch.IsOn;
-        var ok = enable ? AutoStartService.Enable() : AutoStartService.Disable();
+        var ok = enable ? AutoStartService.Enable(AdminSwitch.IsOn) : AutoStartService.Disable();
         if (!ok)
         {
             ShowInfoBar("设置开机自启失败，请确认有权限创建任务计划。", InfoBarSeverity.Warning);
-            _loading = true;
-            AutoStartSwitch.IsOn = AutoStartService.IsEnabled();
-            _loading = false;
         }
+        RefreshAutoStartState();
+    }
+
+    /// <summary>切换「以最高权限运行」：删掉旧任务按新权限重建。</summary>
+    private void AdminSwitch_Toggled(object sender, RoutedEventArgs e)
+    {
+        if (_loading) return;
+        if (!AutoStartSwitch.IsOn) return;
+
+        var runAsAdmin = AdminSwitch.IsOn;
+        AutoStartService.Disable();
+        if (!AutoStartService.Enable(runAsAdmin))
+        {
+            ShowInfoBar(runAsAdmin
+                ? "以最高权限创建任务失败，可能需要在 UAC 提示里允许。已恢复为普通权限。"
+                : "重建任务失败，请确认有权限创建任务计划。", InfoBarSeverity.Warning);
+        }
+        RefreshAutoStartState();
+    }
+
+    /// <summary>把两个开关回读成任务的真实状态，避免界面和系统不一致。</summary>
+    private void RefreshAutoStartState()
+    {
+        _loading = true;
+        var enabled = AutoStartService.IsEnabled();
+        AutoStartSwitch.IsOn = enabled;
+        AdminSwitch.IsOn = enabled && AutoStartService.IsRunAsAdmin();
+        AdminSwitch.IsEnabled = enabled;
+        _loading = false;
     }
 
     private void AudioSwitch_Toggled(object sender, RoutedEventArgs e)

@@ -66,14 +66,6 @@ public sealed class WatcherService : IDisposable
     private static readonly TimeSpan CompactInterval = TimeSpan.FromMinutes(5);
     private static readonly TimeSpan CompactLookback = TimeSpan.FromHours(2);
 
-    /// <summary>
-    /// 结算间隔上限（秒）。心跳是 5 秒一次，超过这个值说明中间断档过——
-    /// 睡眠、现代待机丢了 suspend 事件、进程被挂起、系统时钟跳变。
-    /// 这段空隙绝不能算进任何片段：睡 3 小时醒来凭空多记 3 小时前台时长，
-    /// 而且用户完全察觉不到，是最难排查的那类偏差。
-    /// </summary>
-    private const int MaxSegmentGapSeconds = 120;
-
     /// <summary>请求对灰区应用当前片段进行用途标注（参数：片段ID、进程名）。</summary>
     public event Action<long, string>? PurposePrompt;
 
@@ -220,7 +212,7 @@ public sealed class WatcherService : IDisposable
         // 断档检测必须在所有分支之前：唤醒后如果还是同一个应用、标题没变，
         // 下面的逻辑会走 "直接延长 EndUtc" 的路径，压根不会调用 CloseSegment，
         // 整段睡眠就被吞进片段里。这里先把旧片段就地收在旧时间点。
-        if (_fgSegment != null && (now - _fgSegment.EndUtc).TotalSeconds > MaxSegmentGapSeconds)
+        if (_fgSegment != null && SegmentClock.IsStale(_fgSegment.EndUtc, now))
         {
             CloseSegment(_fgSegment, _fgSegment.EndUtc);
             _fgSegment = null;
@@ -316,7 +308,7 @@ public sealed class WatcherService : IDisposable
         foreach (var pid in _audioSegments.Keys.ToList())
         {
             var stale = _audioSegments[pid];
-            if ((now - stale.EndUtc).TotalSeconds <= MaxSegmentGapSeconds) continue;
+            if (!SegmentClock.IsStale(stale.EndUtc, now)) continue;
             CloseSegment(stale, stale.EndUtc);
             _audioSegments.Remove(pid);
         }
@@ -456,15 +448,10 @@ public sealed class WatcherService : IDisposable
 
     private void CloseSegment(OpenSegment seg, DateTime? at = null)
     {
-        var end = at ?? DateTime.UtcNow;
-
-        // 距上次结算超过上限，说明中间断档过（睡眠 / 丢 suspend 事件 / 进程被挂起）。
-        // 空隙不计入片段，就地收在旧时间点——这条同时覆盖前台与音频两条路径，
+        // 断档守卫在 SegmentClock 里：距上次结算超过上限就把结束时间钳回旧时间点，
+        // 空隙不计入片段。这条同时覆盖前台与音频两条路径，
         // 因为音频的 CloseSegment 传的是显式的 now，同样会把整段睡眠吞进去。
-        if ((end - seg.EndUtc).TotalSeconds > MaxSegmentGapSeconds)
-            end = seg.EndUtc;
-
-        if (end > seg.EndUtc) seg.EndUtc = end;
+        seg.EndUtc = SegmentClock.ResolveEnd(seg.EndUtc, at, DateTime.UtcNow);
 
         // 开了就切走（时长不足半秒）的片段没有任何信息量，
         // 直接删掉而不是留一条空行——否则要等 5 分钟后的压缩任务才清理。

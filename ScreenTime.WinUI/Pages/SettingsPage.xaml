@@ -24,8 +24,16 @@
                     BorderThickness="1"
                     CornerRadius="8">
                     <StackPanel Padding="0">
-                        <settings:SettingsCard Header="开机自启" Description="通过任务计划程序在登录时启动，可记录管理员窗口且不弹 UAC">
+                        <settings:SettingsCard Header="开机自启" Description="通过任务计划程序在登录时启动。默认普通权限，无需 UAC">
                             <ToggleSwitch x:Name="AutoStartSwitch" OnContent="开" OffContent="关" Toggled="AutoStartSwitch_Toggled" />
+                        </settings:SettingsCard>
+                        <settings:SettingsCard Header="以最高权限运行" Description="开启后每次登录以管理员权限启动，创建任务时需要 UAC。实测普通权限已能读取管理员应用的进程名、路径和标题，一般不需要开">
+                            <ToggleSwitch
+                                x:Name="AdminSwitch"
+                                IsEnabled="False"
+                                OffContent="关"
+                                OnContent="开"
+                                Toggled="AdminSwitch_Toggled" />
                         </settings:SettingsCard>
                         <settings:SettingsCard Header="音频计数" Description="应用播放声音时统计（前台后台都计，暂停即停）">
                             <ToggleSwitch x:Name="AudioSwitch" OnContent="开" OffContent="关" Toggled="AudioSwitch_Toggled" />
