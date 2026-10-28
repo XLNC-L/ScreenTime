@@ -51,7 +51,7 @@
     <Link>
       <SubSystem>Windows</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
-      <AdditionalDependencies>dwmapi.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>dwmapi.lib;d2d1.lib;dwrite.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
@@ -74,13 +74,15 @@
       <GenerateDebugInformation>false</GenerateDebugInformation>
       <OptimizeReferences>true</OptimizeReferences>
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
-      <AdditionalDependencies>dwmapi.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>dwmapi.lib;d2d1.lib;dwrite.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="src\main.cpp" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="src\D2DContext.h" />
+    <ClInclude Include="src\DonutChart.h" />
     <ClInclude Include="src\MainFrame.h" />
     <ClInclude Include="src\TrayIcon.h" />
   </ItemGroup>

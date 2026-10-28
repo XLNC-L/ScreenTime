@@ -28,7 +28,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
     ::CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
     _Module.Init(nullptr, hInstance);
 
-    // 主窗口（托盘常驻模式：先隐藏创建）
+    // 主窗口（默认托盘常驻隐藏；--show 用于开发期直接看界面）
     MainFrame wnd;
     CRect rc(0, 0, 1100, 700);
     wnd.Create(
@@ -38,7 +38,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
         WS_OVERLAPPEDWINDOW,          // 样式
         WS_EX_APPWINDOW,              // 扩展样式
         (UINT)0);                     // 菜单/ID（_U_MENUorID），窗口类自动注册
-    wnd.ShowWindow(SW_HIDE);
+    const bool showNow = (wcsstr(::GetCommandLineW(), L"--show") != nullptr);
+    wnd.ShowWindow(showNow ? SW_SHOW : SW_HIDE);
 
     // 消息循环
     MSG msg;

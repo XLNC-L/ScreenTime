@@ -11,8 +11,8 @@ public:
     static constexpr UINT WM_TRAY = WM_APP + 20;
     static constexpr UINT kTrayId = 1;
 
-    // 右键菜单项命令 ID
-    enum : UINT { kCmdOpen = 1, kCmdExit = 2 };
+    // 右键菜单项命令 ID（必须用 WM_APP 范围，避免与系统消息 WM_CREATE=1/WM_DESTROY=2 冲突）
+    enum : UINT { kCmdOpen = WM_APP + 10, kCmdExit = WM_APP + 11 };
 
     void Create(HWND owner)
     {

@@ -1,11 +1,15 @@
 // MainFrame.h — 主窗口（WTL）
-// 极简版 M1：Mica 背景 + 托盘事件转发。今日页内容 M2 开始填充。
+//
+// M2 阶段一：Direct2D 自绘主界面（环形图）。托盘事件转发保持 M1 逻辑。
+
 #pragma once
 
 #include <atlframe.h>
 #include <atlctrls.h>
 #include <dwmapi.h>
 #include "TrayIcon.h"
+#include "D2DContext.h"
+#include "DonutChart.h"
 
 class MainFrame : public CWindowImpl<MainFrame>
 {
@@ -13,13 +17,16 @@ public:
     DECLARE_WND_CLASS_EX(L"ScreenTimeMainWnd", CS_HREDRAW | CS_VREDRAW, -1)
 
     BEGIN_MSG_MAP(MainFrame)
-        MESSAGE_HANDLER(TrayIcon::WM_TRAY, OnTray)
-        MESSAGE_HANDLER(TrayIcon::kCmdOpen, OnOpen)
-        MESSAGE_HANDLER(TrayIcon::kCmdExit, OnExit)
+        // 系统消息优先注册，避免被自定义消息号抢占
         MESSAGE_HANDLER(WM_CREATE, OnCreate)
+        MESSAGE_HANDLER(WM_SIZE, OnSize)
+        MESSAGE_HANDLER(WM_ERASEBKGND, OnEraseBkgnd)
         MESSAGE_HANDLER(WM_CLOSE, OnClose)
         MESSAGE_HANDLER(WM_DESTROY, OnDestroy)
         MESSAGE_HANDLER(WM_PAINT, OnPaint)
+        MESSAGE_HANDLER(TrayIcon::WM_TRAY, OnTray)
+        MESSAGE_HANDLER(TrayIcon::kCmdOpen, OnOpen)
+        MESSAGE_HANDLER(TrayIcon::kCmdExit, OnExit)
     END_MSG_MAP()
 
     LRESULT OnTray(UINT, WPARAM wParam, LPARAM lParam, BOOL&)
@@ -44,12 +51,57 @@ public:
     {
         ApplyMica();
         m_tray.Create(m_hWnd);
+
+        // M2 阶段一：演示数据（后续接 SQLite 真实读取，空数据走占位图）
+        if (!m_d2d.Create(m_hWnd))
+        {
+            // 记录失败原因到 %TEMP%\screen32_d2d.log，便于排查
+            wchar_t tmpPath[MAX_PATH]{}, logPath[MAX_PATH]{};
+            if (::GetEnvironmentVariableW(L"TEMP", tmpPath, MAX_PATH) > 0)
+            {
+                wcscpy_s(logPath, tmpPath);
+                wcscat_s(logPath, L"\\screen32_d2d.log");
+                wchar_t msg[160];
+                swprintf_s(msg, L"CreateHwndRenderTarget HRESULT=0x%08X", m_d2d.LastHr());
+                FILE* f = nullptr;
+                if (_wfopen_s(&f, logPath, L"w") == 0 && f)
+                {
+                    fwprintf(f, L"%s\n", msg);
+                    fclose(f);
+                }
+            }
+            return -1; // D2D 不可用，窗口关闭（极简版依赖 D2D 自绘）
+        }
+
+        std::vector<DonutChart::Segment> segs;
+        segs.push_back({ 46.f, Palette::Teal(),   L"Microsoft Edge" });
+        segs.push_back({ 32.f, Palette::Violet(), L"WeChat" });
+        segs.push_back({ 21.f, Palette::Amber(),  L"Doubao" });
+        segs.push_back({ 12.f, Palette::Pink(),   L"IDM" });
+        segs.push_back({ 9.f,  Palette::Slate(),  L"其他" });
+        m_donut.SetSegments(std::move(segs));
+        m_donut.SetEmpty(false);
         return 0;
+    }
+
+    LRESULT OnSize(UINT, WPARAM, LPARAM lParam, BOOL&)
+    {
+        const UINT cx = LOWORD(lParam);
+        const UINT cy = HIWORD(lParam);
+        m_d2d.Resize(cx, cy);
+        ::InvalidateRect(m_hWnd, nullptr, TRUE);
+        return 0;
+    }
+
+    // 禁用系统擦背景，避免闪烁（D2D 自己 Clear）
+    LRESULT OnEraseBkgnd(UINT, WPARAM, LPARAM, BOOL&)
+    {
+        return TRUE;
     }
 
     LRESULT OnClose(UINT, WPARAM, LPARAM, BOOL&)
     {
-        // M1：关闭即退出；后续可改为「关闭最小化到托盘」
+        // M1 阶段关闭即退出；后续可改为「最小化到托盘」
         ::DestroyWindow(m_hWnd);
         return 0;
     }
@@ -63,22 +115,46 @@ public:
 
     LRESULT OnPaint(UINT, WPARAM, LPARAM, BOOL&)
     {
-        // M1 占位：深色背景上画一行文字，M2 换成 Direct2D 自绘
         PAINTSTRUCT ps;
-        HDC hdc = ::BeginPaint(m_hWnd, &ps);
-        RECT rc;
-        ::GetClientRect(m_hWnd, &rc);
-        ::FillRect(hdc, &rc, (HBRUSH)::GetStockObject(BLACK_BRUSH));
-        ::SetTextColor(hdc, RGB(220, 220, 220));
-        ::SetBkMode(hdc, TRANSPARENT);
-        ::DrawTextW(hdc, L"ScreenTime 极简版 — M1 骨架", -1, &rc,
-            DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        ::BeginPaint(m_hWnd, &ps);
+
+        if (m_d2d.RT())
+        {
+            m_d2d.Begin();
+            m_d2d.Clear();
+
+            // 环形图占主区域：四周留 24px 网格边距
+            RECT rc;
+            ::GetClientRect(m_hWnd, &rc);
+            const D2D1_RECT_F bounds = {
+                (FLOAT)rc.left + 24.f, (FLOAT)rc.top + 24.f,
+                (FLOAT)rc.right - 24.f, (FLOAT)rc.bottom - 24.f
+            };
+
+            m_donut.CalculateLayout(bounds);
+            m_donut.Render(m_d2d);
+            m_d2d.End();
+        }
+        else
+        {
+            // 兜底：D2D 初始化失败时的简单 GDI 文案
+            RECT rc;
+            ::GetClientRect(m_hWnd, &rc);
+            HDC hdc = ::GetDC(m_hWnd);
+            ::SetBkColor(hdc, RGB(18, 21, 28));
+            ::SetTextColor(hdc, RGB(220, 220, 220));
+            ::DrawTextW(hdc, L"Direct2D 初始化失败", -1, &rc, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+            ::ReleaseDC(m_hWnd, hdc);
+        }
+
         ::EndPaint(m_hWnd, &ps);
         return 0;
     }
 
 private:
     TrayIcon m_tray;
+    D2DContext m_d2d;
+    DonutChart m_donut;
 
     // Win11 22000+：主窗口 Mica 背景 + 跟随深色
     void ApplyMica()
