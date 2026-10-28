@@ -353,6 +353,15 @@ public sealed class WatcherService : IDisposable
     {
         var end = at ?? DateTime.UtcNow;
         if (end > seg.EndUtc) seg.EndUtc = end;
+
+        // 开了就切走（时长不足半秒）的片段没有任何信息量，
+        // 直接删掉而不是留一条空行——否则要等 5 分钟后的压缩任务才清理。
+        if ((seg.EndUtc - seg.StartUtc).TotalSeconds < 0.5)
+        {
+            _db.DeleteSegment(seg.RowId);
+            return;
+        }
+
         _db.UpdateSegmentEnd(seg.RowId, seg.EndUtc, seg.Kind == "foreground" ? seg.Title : null);
     }
 

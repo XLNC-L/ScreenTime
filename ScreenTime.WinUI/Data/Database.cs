@@ -623,6 +623,16 @@ public sealed class Database
         cmd.ExecuteNonQuery();
     }
 
+    /// <summary>删除单个片段（用于丢弃零长度片段）。</summary>
+    public void DeleteSegment(long segmentId)
+    {
+        using var c = Open();
+        using var cmd = c.CreateCommand();
+        cmd.CommandText = "DELETE FROM usage_segments WHERE id=$id";
+        cmd.Parameters.AddWithValue("$id", segmentId);
+        cmd.ExecuteNonQuery();
+    }
+
     public void UpdateSegmentEnd(long segmentId, DateTime endUtc, string? title = null, string? site = null)
     {
         using var c = Open();
