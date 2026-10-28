@@ -10,6 +10,9 @@
     <WindowsAppSDKSelfContained>true</WindowsAppSDKSelfContained>
     <EnableMsixTooling>true</EnableMsixTooling>
     <RuntimeIdentifiers>win-x64</RuntimeIdentifiers>
+    <!-- 自己写 Program.cs 作入口：单实例检查要放在 WinUI 初始化之前，
+         否则第二个实例在 App 构造函数里 Environment.Exit 会弹系统错误框 -->
+    <DefineConstants>$(DefineConstants);DISABLE_XAML_GENERATED_MAIN</DefineConstants>
     <!-- 必须固定 RID：WindowsAppSDKSelfContained 需要明确架构，
          否则直接 dotnet build 会报 "requires a supported Windows architecture" -->
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>

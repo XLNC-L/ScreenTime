@@ -62,10 +62,10 @@ public partial class TodayPage : Page
         FgText.Text = StatsService.FormatDurationExact(fgInt);
         AudioText.Text = StatsService.FormatDurationExact(bgInt);
 
-        var lastBoot = _db.GetLastBootTime();
-        BootText.Text = lastBoot != null
-            ? lastBoot.Value.ToLocalTime().ToString("MM-dd HH:mm")
-            : "—";
+        // 亮屏时长：靠 display_on / display_off 事件配对，跟开机时间无关
+        //（锁屏后屏幕还亮着，屏幕超时熄灭时又没锁屏，都不能拿开机/锁屏去推）
+        var screenOnSec = _db.GetDisplayOnSeconds(from, to);
+        ScreenOnText.Text = StatsService.FormatDurationExact(screenOnSec);
 
         // 分类占比（过滤无时长的空类别）
         var byCategory = apps

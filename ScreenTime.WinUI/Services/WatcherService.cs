@@ -29,6 +29,7 @@ public sealed class WatcherService : IDisposable
     private readonly Database _db;
     private readonly ForegroundWatcher _fgWatcher = new();
     private readonly SessionState _session = new();
+    private readonly DisplayStateWatcher _display = new();
     private readonly AudioMonitor _audio = new();
     private readonly BrowserTabService _browserTabs = new();
     private readonly System.Threading.Timer _timer;
@@ -117,6 +118,21 @@ public sealed class WatcherService : IDisposable
         if (lastBoot is null || Math.Abs((systemBootUtc - lastBoot.Value).TotalSeconds) > 90)
             _db.AddSessionEventAt("boot", systemBootUtc);
 
+        // 亮屏跟踪：靠显示器电源通知，不用锁屏/睡眠去推
+        //（锁屏后屏幕还亮着，屏幕超时熄灭时又没锁屏，两者都不等于亮屏）
+        _display.Changed += OnDisplayChanged;
+        if (_display.Start())
+        {
+            if (_display.NeedsSeed)
+            {
+                // 没收到系统回调时按「刚启动/刚有输入即亮屏，闲置超 10 分钟即灭屏」兜底
+                _display.Seed(Win32.GetIdleSeconds() < 600);
+            }
+            // 无论状态从哪来，都要记一条起始事件——否则亮屏时长没有起点，
+            // 得等第一次「熄灭→点亮」才有数据
+            _db.AddSessionEvent(_display.IsOn ? "display_on" : "display_off");
+        }
+
         // 历史碎片清理：旧版本在标题变化时无脑切分，留下大量零长度片段。
         // 启动时把最近 7 天的过短片段并入相邻同应用片段，之后由心跳增量维护。
         try
@@ -152,6 +168,13 @@ public sealed class WatcherService : IDisposable
     {
         // 窗口切换事件：立即结算，提高精度（与心跳共用同一把锁，抢不到就交给下一拍）
         SafeHeartbeat();
+    }
+
+    /// <summary>显示器开/关：记一条事件，亮屏时长靠它配对算。</summary>
+    private void OnDisplayChanged(bool on)
+    {
+        try { _db.AddSessionEvent(on ? "display_on" : "display_off"); }
+        catch { /* 写库失败不影响采集 */ }
     }
 
     private void Heartbeat()
@@ -463,5 +486,6 @@ public sealed class WatcherService : IDisposable
         _timer.Dispose();
         _fgWatcher.Dispose();
         _session.Dispose();
+        _display.Dispose();
     }
 }

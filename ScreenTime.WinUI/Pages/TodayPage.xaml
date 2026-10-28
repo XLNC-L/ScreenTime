@@ -70,10 +70,11 @@
                     Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
                     BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
                     BorderThickness="1"
-                    CornerRadius="8">
+                    CornerRadius="8"
+                    ToolTipService.ToolTip="今天屏幕亮着的累计时长，来自 Windows 的显示器电源状态。&#x0a;锁屏但屏幕还亮着的时间算在内，屏幕熄灭的时间不算。">
                     <StackPanel Spacing="4">
-                        <TextBlock Style="{StaticResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" Text="开机时间" />
-                        <TextBlock x:Name="BootText" Style="{StaticResource TitleTextBlockStyle}" />
+                        <TextBlock Style="{StaticResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" Text="亮屏时长" />
+                        <TextBlock x:Name="ScreenOnText" Style="{StaticResource TitleTextBlockStyle}" />
                     </StackPanel>
                 </Border>
             </Grid>

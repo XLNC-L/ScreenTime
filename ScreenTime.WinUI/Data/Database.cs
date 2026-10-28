@@ -904,6 +904,59 @@ public sealed class Database
         return ParseIso(r.ToString()!);
     }
 
+    /// <summary>
+    /// 统计区间内「屏幕亮着」的累计秒数。
+    /// 依据 display_on / display_off 事件配对得出：从一条 display_on 起算，
+    /// 到下一条 display_off 为止，与查询区间求交后累加。
+    /// 区间起点之前若没有事件，视为灭屏（那时候程序还没在跑，无从得知）。
+    /// </summary>
+    public double GetDisplayOnSeconds(DateTime fromUtc, DateTime toUtc)
+    {
+        // 查询区间通常是"整天"（DayRange 给到次日 0 点），必须截到现在，
+        // 否则最后一段会一直算到今晚 24 点，数字凭空多出几个小时。
+        var now = DateTime.UtcNow;
+        if (toUtc > now) toUtc = now;
+        if (toUtc <= fromUtc) return 0;
+
+        var events = new List<(bool On, DateTime Ts)>();
+        using var c = Open();
+        using var cmd = c.CreateCommand();
+        cmd.CommandText = """
+            SELECT type, ts FROM session_events
+            WHERE type IN ('display_on','display_off') AND ts <= $t
+            ORDER BY ts
+            """;
+        cmd.Parameters.AddWithValue("$t", ToIso(toUtc));
+        using (var r = cmd.ExecuteReader())
+            while (r.Read())
+                events.Add((r.GetString(0) == "display_on", ParseIso(r.GetString(1))));
+
+        var total = 0.0;
+        var on = false;
+        var cursor = DateTime.MinValue;
+
+        foreach (var (isOn, ts) in events)
+        {
+            if (on && ts > fromUtc)
+            {
+                var start = cursor > fromUtc ? cursor : fromUtc;
+                var end = ts < toUtc ? ts : toUtc;
+                if (end > start) total += (end - start).TotalSeconds;
+            }
+            on = isOn;
+            cursor = ts;
+        }
+
+        // 最后一条是"亮"且还没遇到关闭事件：算到区间末尾
+        if (on)
+        {
+            var start = cursor > fromUtc ? cursor : fromUtc;
+            if (toUtc > start) total += (toUtc - start).TotalSeconds;
+        }
+
+        return total;
+    }
+
     public string? GetSetting(string key, string? fallback = null)
     {
         using var c = Open();

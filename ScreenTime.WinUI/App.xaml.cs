@@ -13,12 +13,9 @@ namespace ScreenTime;
 
 public partial class App : Application
 {
-    private const string MutexName = "ScreenTime_SingleInstance_Mutex";
-
     /// <summary>已运行实例的唤起通道：第二个实例连上来就说明用户想打开主窗口。</summary>
     private const string ActivatePipeName = "ScreenTime_Activate";
 
-    private static Mutex? _mutex;
     private MainWindow? _mainWindow;
     private TrayService? _tray;
     private DispatcherQueue? _uiQueue;
@@ -34,16 +31,7 @@ public partial class App : Application
         UnhandledException += OnUnhandledException;
         AppDomain.CurrentDomain.UnhandledException += (_, ev) => WriteError(ev.ExceptionObject);
 
-        bool createdNew;
-        _mutex = new Mutex(true, MutexName, out createdNew);
-        if (!createdNew)
-        {
-            // 已经有实例在跑：让那个实例把窗口亮出来，而不是毫无反应地退出。
-            // 托盘应用从开始菜单/桌面再点一次图标时，用户期待的就是"打开界面"。
-            SignalExistingInstance();
-            Environment.Exit(0);
-            return;
-        }
+        // 单实例检查已挪到 Program.Main（WinUI 初始化之前），这里不再处理
 
         InitializeComponent();
 
@@ -71,7 +59,7 @@ public partial class App : Application
         Environment.GetCommandLineArgs().Any(a => a.Equals(flag, StringComparison.OrdinalIgnoreCase));
 
     /// <summary>通知已运行实例显示主窗口（命名管道，失败即忽略）。</summary>
-    private static void SignalExistingInstance()
+    internal static void SignalExistingInstance()
     {
         try
         {
