@@ -12,6 +12,8 @@
 #include "DonutChart.h"
 #include "Timeline.h"
 #include "RankList.h"
+#include "PurposeBar.h"
+#include "OverviewCards.h"
 
 class MainFrame : public CWindowImpl<MainFrame>
 {
@@ -75,6 +77,7 @@ public:
             return -1; // D2D 不可用，窗口关闭（极简版依赖 D2D 自绘）
         }
 
+        // 分类占比（图例模式：小环形图 + 右侧图例）
         std::vector<DonutChart::Segment> segs;
         segs.push_back({ 46.f, Palette::Teal(),   L"Microsoft Edge" });
         segs.push_back({ 32.f, Palette::Violet(), L"WeChat" });
@@ -83,6 +86,15 @@ public:
         segs.push_back({ 9.f,  Palette::Slate(),  L"其他" });
         m_donut.SetSegments(std::move(segs));
         m_donut.SetEmpty(false);
+        m_donut.SetLegendMode(true);
+
+        // 用途分布
+        std::vector<PurposeBar::PurposeItem> purposes;
+        purposes.push_back({ L"社交媒体", 46.f, Palette::Blue() });
+        purposes.push_back({ L"浏览网页", 37.f, Palette::Teal() });
+        purposes.push_back({ L"办公效率", 10.f, Palette::Sage() });
+        purposes.push_back({ L"视频媒体", 7.f,  Palette::Pink() });
+        m_purpose.SetItems(std::move(purposes));
 
         // 时间线演示时段（合计 120 分钟，与环形图一致；分钟 0-1440）
         std::vector<Timeline::TimeSlot> slots;
@@ -104,6 +116,15 @@ public:
         ranks.push_back({ L"其他", 9.f, Palette::Slate() });
         m_rank.SetItems(std::move(ranks));
         m_rank.SetEmpty(false);
+
+        // 概览四卡
+        OverviewCards::Card cards[4] = {
+            { L"今日总时长", L"2:00" },
+            { L"前台时长",   L"1:50" },
+            { L"后台播放",   L"0:10" },
+            { L"亮屏时长",   L"3:20" },
+        };
+        m_cards.SetData(cards, 4);
         return 0;
     }
 
@@ -143,11 +164,12 @@ public:
 
         if (m_d2d.RT())
         {
+            ID2D1RenderTarget* rt = m_d2d.RT();
             m_d2d.Begin();
             m_d2d.Clear();
 
-            // 三栏布局（8px 网格边距 24px）：
-            //   左栏 = 环形图，右栏上 = 时间线，右栏下 = 排行列表
+            // 复刻原版今日页纵向布局（24px 边距）：
+            //   页头 → 四概览卡 → 中部两列（左：分类占比+用途分布；右：应用排行）→ 时间线
             RECT rc;
             ::GetClientRect(m_hWnd, &rc);
             const FLOAT L = (FLOAT)rc.left + 24.f;
@@ -155,22 +177,60 @@ public:
             const FLOAT R = (FLOAT)rc.right - 24.f;
             const FLOAT B = (FLOAT)rc.bottom - 24.f;
 
-            const FLOAT leftW = (R - L) * 0.40f;    // 左栏宽
-            const FLOAT rightX = L + leftW + 24.f;  // 右栏起点
-            const FLOAT timeH = (B - T) * 0.52f;    // 时间线区高
+            // 页头
+            D2D1_RECT_F header = { L, T, R, T + 48.f };
+            DrawHeader(header);
 
-            const D2D1_RECT_F donutBounds = { L, T, L + leftW, B };
-            const D2D1_RECT_F timelineBounds = { rightX, T, R, T + timeH };
-            const D2D1_RECT_F rankBounds = { rightX, T + timeH + 24.f, R, B };
+            // 四概览卡
+            D2D1_RECT_F cards = { L, T + 56.f, R, T + 140.f };
+            m_cards.CalculateLayout(cards);
+            m_cards.Render(m_d2d);
 
-            m_donut.CalculateLayout(donutBounds);
+            // 中部两列
+            const FLOAT midTop = T + 164.f;
+            const FLOAT midBot = T + 536.f;
+            const FLOAT colGap = 16.f;
+            const FLOAT leftColR = L + (R - L - colGap) * 0.46f;
+            const FLOAT rightColL = leftColR + colGap;
+
+            // 左列：分类占比（标题 + 环形图 + 图例）
+            D2D1_RECT_F donutCard = { L, midTop, leftColR, midTop + 168.f };
+            DrawCard(donutCard);
+            D2D1_RECT_F donutTitle = { donutCard.left + 16.f, donutCard.top + 14.f,
+                                       donutCard.right - 16.f, donutCard.top + 38.f };
+            rt->DrawText(L"分类占比", 4, m_sectionFmt, donutTitle, m_textBrush,
+                         D2D1_DRAW_TEXT_OPTIONS_NONE, DWRITE_MEASURING_MODE_NATURAL);
+            D2D1_RECT_F donutRing = { donutCard.left + 16.f, donutCard.top + 48.f,
+                                      donutCard.left + 136.f, donutCard.top + 168.f };
+            m_donut.CalculateLayout(donutRing);
             m_donut.Render(m_d2d);
+            D2D1_RECT_F donutLegend = { donutRing.right + 12.f, donutCard.top + 48.f,
+                                        donutCard.right - 16.f, donutCard.bottom - 12.f };
+            m_donut.RenderLegend(m_d2d, donutLegend);
 
-            m_timeline.CalculateLayout(timelineBounds);
-            m_timeline.Render(m_d2d);
+            // 左列：用途分布
+            D2D1_RECT_F purposeCard = { L, midTop + 168.f + 16.f, leftColR, midBot };
+            DrawCard(purposeCard);
+            D2D1_RECT_F purposeInner = { purposeCard.left + 16.f, purposeCard.top + 14.f,
+                                         purposeCard.right - 16.f, purposeCard.bottom - 12.f };
+            m_purpose.CalculateLayout(purposeInner);
+            m_purpose.Render(m_d2d);
 
-            m_rank.CalculateLayout(rankBounds);
+            // 右列：应用排行
+            D2D1_RECT_F rankCard = { rightColL, midTop, R, midBot };
+            DrawCard(rankCard);
+            D2D1_RECT_F rankInner = { rankCard.left + 16.f, rankCard.top + 14.f,
+                                      rankCard.right - 16.f, rankCard.bottom - 12.f };
+            m_rank.CalculateLayout(rankInner);
             m_rank.Render(m_d2d);
+
+            // 时间线（全宽）
+            D2D1_RECT_F timelineCard = { L, midBot + 24.f, R, B };
+            DrawCard(timelineCard);
+            D2D1_RECT_F timelineInner = { timelineCard.left + 16.f, timelineCard.top + 14.f,
+                                          timelineCard.right - 16.f, timelineCard.bottom - 12.f };
+            m_timeline.CalculateLayout(timelineInner);
+            m_timeline.Render(m_d2d);
 
             m_d2d.End();
         }
@@ -196,6 +256,52 @@ private:
     DonutChart m_donut;
     Timeline m_timeline;
     RankList m_rank;
+    PurposeBar m_purpose;
+    OverviewCards m_cards;
+
+    // 卡片通用样式（复刻原版 Border：圆角 8、CardBackground + 1px 描边）
+    void DrawCard(const D2D1_RECT_F& rc)
+    {
+        ID2D1RenderTarget* rt = m_d2d.RT();
+        if (!m_cardBrush)
+        {
+            m_cardBrush = m_d2d.MakeSolid(D2D1::ColorF(0x1E2129, 0.85f));
+            m_strokeBrush = m_d2d.MakeSolid(D2D1::ColorF(0x3A4150, 0.6f));
+            m_sectionFmt = m_d2d.MakeTextFormat(20.f, DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_TEXT_ALIGNMENT_LEADING);
+            m_textBrush = m_d2d.MakeSolid(Palette::TextPrimary());
+            m_headerFmt = m_d2d.MakeTextFormat(28.f, DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_TEXT_ALIGNMENT_LEADING);
+            m_dateFmt = m_d2d.MakeTextFormat(16.f, DWRITE_FONT_WEIGHT_REGULAR, DWRITE_TEXT_ALIGNMENT_LEADING);
+            m_dateBrush = m_d2d.MakeSolid(Palette::TextSecondary());
+        }
+        rt->FillRoundedRectangle(D2D1::RoundedRect(rc, 8.f, 8.f), m_cardBrush);
+        rt->DrawRoundedRectangle(D2D1::RoundedRect(rc, 8.f, 8.f), m_strokeBrush, 1.f);
+    }
+
+    // 页头：标题「今日」+ 日期
+    void DrawHeader(const D2D1_RECT_F& rc)
+    {
+        ID2D1RenderTarget* rt = m_d2d.RT();
+        if (!m_cardBrush) DrawCard(rc); // 触发资源初始化
+        D2D1_RECT_F rcTitle = { rc.left, rc.top, rc.left + 160.f, rc.top + 32.f };
+        rt->DrawText(L"今日", 2, m_headerFmt, rcTitle, m_textBrush,
+                     D2D1_DRAW_TEXT_OPTIONS_NONE, DWRITE_MEASURING_MODE_NATURAL);
+
+        SYSTEMTIME st;
+        ::GetLocalTime(&st);
+        wchar_t buf[32];
+        swprintf_s(buf, L"%d年%02d月%02d日", st.wYear, st.wMonth, st.wDay);
+        D2D1_RECT_F rcDate = { rc.left, rc.top + 32.f, rc.left + 300.f, rc.top + 48.f };
+        rt->DrawText(buf, (UINT32)wcslen(buf), m_dateFmt, rcDate, m_dateBrush,
+                     D2D1_DRAW_TEXT_OPTIONS_NONE, DWRITE_MEASURING_MODE_NATURAL);
+    }
+
+    CComPtr<ID2D1SolidColorBrush> m_cardBrush;
+    CComPtr<ID2D1SolidColorBrush> m_strokeBrush;
+    CComPtr<ID2D1SolidColorBrush> m_textBrush;
+    CComPtr<ID2D1SolidColorBrush> m_dateBrush;
+    CComPtr<IDWriteTextFormat> m_sectionFmt;
+    CComPtr<IDWriteTextFormat> m_headerFmt;
+    CComPtr<IDWriteTextFormat> m_dateFmt;
 
     // Win11 22000+：主窗口 Mica 背景 + 跟随深色
     void ApplyMica()

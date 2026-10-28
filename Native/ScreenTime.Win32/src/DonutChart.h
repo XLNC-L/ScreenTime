@@ -67,6 +67,9 @@ public:
     void SetEmpty(bool empty) { m_empty = empty; }
     bool IsEmpty() const { return m_empty; }
 
+    // 图例模式（复刻原版「分类占比」卡）：只画环，不画中心文字；图例用 RenderLegend 单独画
+    void SetLegendMode(bool on) { m_legendMode = on; }
+
     // 布局：尺寸变化时调用；更新半径并标记数据资源待重建
     void CalculateLayout(const D2D1_RECT_F& bounds)
     {
@@ -114,8 +117,46 @@ public:
             rt->DrawGeometry(m_geos[i], m_gradients[i], m_thickness, m_roundCap);
         }
 
-        // 4) 中心文字
-        RenderCenterText(rt);
+        // 4) 中心文字（图例模式下不画）
+        if (!m_legendMode)
+            RenderCenterText(rt);
+    }
+
+    // 图例（复刻原版）：色块 12x12 + 应用名 + 百分比，行高 20
+    void RenderLegend(D2DContext& ctx, const D2D1_RECT_F& bounds)
+    {
+        ID2D1RenderTarget* rt = ctx.RT();
+        if (!rt || m_segs.empty()) return;
+        EnsureDeviceResources(ctx);
+
+        float total = 0.f;
+        for (auto& a : m_anims) total += a.current;
+        if (total <= 0.f) total = 1.f;
+
+        const FLOAT rowH = 20.f;
+        for (size_t i = 0; i < m_segs.size(); ++i)
+        {
+            const FLOAT y = bounds.top + (FLOAT)i * rowH;
+            if (y + rowH > bounds.bottom) break;
+
+            // 色块（渐变）
+            D2D1_RECT_F dot = { bounds.left, y + 4.f, bounds.left + 12.f, y + 16.f };
+            if (i < m_geos.size() && m_gradients[i])
+                rt->FillRoundedRectangle(D2D1::RoundedRect(dot, 3.f, 3.f), m_gradients[i]);
+
+            // 名称（截断）
+            D2D1_RECT_F rcName = { bounds.left + 18.f, y, bounds.left + 150.f, y + rowH };
+            rt->DrawText(m_segs[i].label, (UINT32)wcslen(m_segs[i].label), m_legendNameFmt,
+                         rcName, m_labelBrush,
+                         D2D1_DRAW_TEXT_OPTIONS_CLIP, DWRITE_MEASURING_MODE_NATURAL);
+
+            // 百分比（右侧）
+            wchar_t buf[16];
+            swprintf_s(buf, L"%d%%", (int)(m_segs[i].value / total * 100.f));
+            D2D1_RECT_F rcPct = { bounds.right - 60.f, y, bounds.right, y + rowH };
+            rt->DrawText(buf, (UINT32)wcslen(buf), m_legendPctFmt, rcPct, m_labelBrush,
+                         D2D1_DRAW_TEXT_OPTIONS_NONE, DWRITE_MEASURING_MODE_NATURAL);
+        }
     }
 
     // 预留：300ms ease-out。静态阶段直接同步；后续每帧调用并检查 NeedsRepaint()
@@ -159,6 +200,8 @@ private:
         m_emptyIconBrush = ctx.MakeSolid(Palette::TextMuted());
         m_textBig = ctx.MakeTextFormat(40.f, DWRITE_FONT_WEIGHT_SEMI_BOLD);
         m_textSmall = ctx.MakeTextFormat(16.f);
+        m_legendNameFmt = ctx.MakeTextFormat(14.f, DWRITE_FONT_WEIGHT_REGULAR, DWRITE_TEXT_ALIGNMENT_LEADING);
+        m_legendPctFmt = ctx.MakeTextFormat(14.f, DWRITE_FONT_WEIGHT_REGULAR, DWRITE_TEXT_ALIGNMENT_TRAILING);
 
         D2D1_STROKE_STYLE_PROPERTIES strokeProps = {};
         strokeProps.startCap = D2D1_CAP_STYLE_ROUND;
@@ -291,6 +334,7 @@ private:
     std::vector<AnimState> m_anims;
     bool m_empty = false;
     bool m_pending = false;
+    bool m_legendMode = false;
 
     // ---- 布局缓存 ----
     D2D1_POINT_2F m_center = {};
@@ -312,6 +356,8 @@ private:
     CComPtr<ID2D1StrokeStyle> m_roundCap;
     CComPtr<IDWriteTextFormat> m_textBig;
     CComPtr<IDWriteTextFormat> m_textSmall;
+    CComPtr<IDWriteTextFormat> m_legendNameFmt;
+    CComPtr<IDWriteTextFormat> m_legendPctFmt;
     std::vector<CComPtr<ID2D1LinearGradientBrush>> m_gradients;
     std::vector<CComPtr<ID2D1PathGeometry>> m_geos;
 };

@@ -107,11 +107,11 @@ private:
     void EnsureDeviceResources(D2DContext& ctx)
     {
         if (m_deviceReady) return;
-        m_titleBrush = ctx.MakeSolid(Palette::TextSecondary());
+        m_titleBrush = ctx.MakeSolid(Palette::TextPrimary());
         m_textBrush = ctx.MakeSolid(Palette::TextPrimary());
         m_timeBrush = ctx.MakeSolid(Palette::TextSecondary());
         m_trackBrush = ctx.MakeSolid(Palette::Track());
-        m_titleFmt = ctx.MakeTextFormat(16.f, DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_TEXT_ALIGNMENT_LEADING);
+        m_titleFmt = ctx.MakeTextFormat(20.f, DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_TEXT_ALIGNMENT_LEADING);
         m_nameFmt = ctx.MakeTextFormat(16.f, DWRITE_FONT_WEIGHT_REGULAR, DWRITE_TEXT_ALIGNMENT_LEADING);
         m_timeFmt = ctx.MakeTextFormat(16.f, DWRITE_FONT_WEIGHT_REGULAR, DWRITE_TEXT_ALIGNMENT_TRAILING);
         m_deviceReady = true;

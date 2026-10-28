@@ -30,7 +30,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
 
     // 主窗口（默认托盘常驻隐藏；--show 用于开发期直接看界面）
     MainFrame wnd;
-    CRect rc(0, 0, 1100, 700);
+    CRect rc(0, 0, 1100, 720);
     wnd.Create(
         nullptr,                      // 父窗口
         rc,                           // 初始矩形
