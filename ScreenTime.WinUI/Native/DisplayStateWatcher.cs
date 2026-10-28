@@ -44,6 +44,17 @@ public sealed class DisplayStateWatcher : IDisposable
     private IntPtr _handle;
     private bool _firstCallback = true;
 
+    /// <summary>
+    /// 防抖：显示状态稳定 2 秒才落账。
+    /// 多显示器重新握手时（拔插线、驱动重启、某块屏卡在省电），
+    /// 状态会以约 1Hz 疯狂翻转——实测一分多钟写进 137 条事件。
+    /// 不防抖的话，"亮/灭"各占一半，亮屏时长会被砍掉一半。
+    /// </summary>
+    private readonly System.Threading.Timer _settle;
+    private volatile bool _pendingOn;
+    private volatile bool _disposed;
+    private const int SettleMs = 2000;
+
     /// <summary>当前是否亮屏（变暗也算亮）。</summary>
     public bool IsOn { get; private set; } = true;
 
@@ -56,6 +67,8 @@ public sealed class DisplayStateWatcher : IDisposable
     public DisplayStateWatcher()
     {
         _callback = OnNotify;
+        _settle = new System.Threading.Timer(_ => Settle(), null,
+            System.Threading.Timeout.Infinite, System.Threading.Timeout.Infinite);
     }
 
     public bool Start()
@@ -132,15 +145,30 @@ public sealed class DisplayStateWatcher : IDisposable
 
             var on = value != 0;
             if (on == IsOn) return 0;
-            IsOn = on;
-            Log(on ? "display_on" : "display_off");
-            Changed?.Invoke(on);
+
+            // 不立刻落账：等它稳定 2 秒再说。翻转期间每次都会重置计时器，
+            // 只有真正稳定下来的那个状态才会被记录。
+            _pendingOn = on;
+            if (!_disposed) _settle.Change(SettleMs, System.Threading.Timeout.Infinite);
         }
         catch
         {
             // 回调里不能抛异常
         }
         return 0;
+    }
+
+    /// <summary>防抖到期：把稳定的新状态落账并通知订阅者。</summary>
+    private void Settle()
+    {
+        if (_disposed) return;
+        var target = _pendingOn;
+        if (target == IsOn) return;
+
+        IsOn = target;
+        Log(target ? "display_on" : "display_off");
+        try { Changed?.Invoke(target); }
+        catch { /* 订阅方异常不影响监听 */ }
     }
 
     /// <summary>
@@ -166,6 +194,11 @@ public sealed class DisplayStateWatcher : IDisposable
 
     public void Dispose()
     {
+        _disposed = true;
+        try { _settle.Change(System.Threading.Timeout.Infinite, System.Threading.Timeout.Infinite); }
+        catch { }
+        _settle.Dispose();
+
         try
         {
             if (_handle != IntPtr.Zero) PowerSettingUnregisterNotification(_handle);
