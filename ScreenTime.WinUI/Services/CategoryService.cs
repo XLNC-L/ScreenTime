@@ -50,6 +50,9 @@ public static class CategoryService
             "lumion", "twinmotion", "keyshot", "mspaint", "paint.net",
             "krita", "affinity", "shotcut",
             "handbrake", "kdenlive", "filmora", "vegas", "camtasia", "bandicam",
+            // 工具链 / AI 编程 / 设备调试
+            "node", "npm", "git-bash", "git-cmd", "git-gui", "cc-switch",
+            "lm studio", "scrcpy", "vivetoolgui", "appcertui",
         ]),
 
         // 办公与文档：Office / PDF / 会议 / 通用 AI 助手
@@ -61,6 +64,9 @@ public static class CategoryService
             "wxwork", "wemeet", "tencentmeeting",
             "kingsoft", "camscanner", "xmind", "mindmanager",
             "doubao",
+            // 通用 AI 助手 / 文档工具
+            "claude", "chatgpt", "copilot", "setlang", "pdfgear", "pdflauncher",
+            "appvlp", "spreadsheet compare",
         ]),
 
         // 通讯与协作：实时通讯 / 团队协作
@@ -91,13 +97,14 @@ public static class CategoryService
             "listen1", "lx-music", "yesplaymusic",
             "netflix", "youtube",
             "douyin", "kuaishou", "twitch", "huya", "douyu",
+            "moekoemusic", "folia",
         ]),
 
         // 游戏：游戏平台与游戏进程
         ("游戏", [
             "steam", "epicgames", "epicgameslauncher", "goggalaxy", "galaxyclient",
             "battle.net", "upc", "upclauncher", "eaapp", "origin", "wegame",
-            "genshinimpact", "yuanshen", "starrail", "honkaistarrail", "zenlesszonezero",
+            "genshinimpact", "genshin", "yuanshen", "starrail", "honkaistarrail", "zenlesszonezero",
             "leagueoflegends", "leagueclient", "valorant", "valorant-win64-shipping",
             "csgo", "counter-strike", "minecraft", "minecraftlauncher", "rockstarservice",
             "gta5", "eldenring", "dota2", "overwatch", "pubg", "tslgame", "apex",
@@ -107,6 +114,7 @@ public static class CategoryService
             "baldur", "starfield", "hoyoplay", "xboxgames",
             "cemu", "yuzu", "ryujinx", "dolphin", "rpcs3", "pcsx2", "ppsspp", "retroarch",
             "gameviewer", "fufulauncher", "bettergi",
+            "angry birds 2", "ubisoftconnect", "game cheats manager", "xboxpcapp",
         ]),
 
         // 社交与购物：电商 / 社区 / 生活消费
@@ -139,8 +147,68 @@ public static class CategoryService
             "aliyundrive", "quark",
             // 压缩
             "7z", "winrar", "bandizip", "haozip",
+            // 压缩 / 系统增强 / 输入法 / 音频驱动 / 网络工具
+            "7zfm", "senaryaudioapp", "nahimic3", "deskhider", "eartrumpet",
+            "everything", "flyingmouse format", "inphic mouse", "idman",
+            "iobitunlocker", "komi-store", "powertoys", "quickclipboard",
+            "revoupport", "translucenttb", "uu_launcher", "tubawinui3",
+            "wetype_update", "leigod_launcher", "clash-verge", "openspeedy",
+            "图吧工具箱2026",
         ]),
     ];
+
+    /// <summary>
+    /// 关键字「包含」规则：进程名 / 可执行文件名 / 路径段里出现即命中，
+    /// 按顺序先命中先用。放在精确匹配之后，所以精确规则永远优先。
+    ///
+    /// 这层的意义是**让以后新装的软件也能自动归位**，不必每装一个就往精确名单里加一行。
+    /// 顺序有讲究：游戏放在最前（避免 "player" 把游戏启动器吸到影音），
+    /// 系统与工具放最后（它是兜底类，关键字最多、最容易误命中）。
+    /// 只收长度 >= 4 的关键字，短词（git / id / qq）误命中率太高。
+    /// </summary>
+    private static readonly (string Category, string[] Keywords)[] KeywordRules =
+    [
+        ("游戏", [
+            "angry birds", "ubisoft", "genshin", "hoyoverse", "mihoyo",
+            "steam", "epicgames", "wegame", "battle.net", "cheat", "游戏",
+        ]),
+        ("开发与创作", [
+            "git-", "github", "nodejs", "jetbrains", "android studio",
+            "lm studio", "scrcpy", "vivetool", "appcert", "postman", "docker",
+        ]),
+        ("办公与文档", [
+            "pdf", "spreadsheet", "acrobat", "office", "wps",
+            "claude", "chatgpt", "copilot", "onenote",
+        ]),
+        ("通讯与协作", [
+            "wechat", "weixin", "dingtalk", "feishu", "lark", "telegram", "discord", "slack",
+        ]),
+        ("影音与娱乐", [
+            "music", "player", "bilibili", "douyin", "video", "kugou", "netease cloud",
+        ]),
+        ("社交与购物", [
+            "taobao", "pinduoduo", "xiaohongshu", "weibo", "zhihu", "jd.com",
+        ]),
+        ("系统与工具", [
+            "audio", "sound", "nahimic", "realtek", "dolby",
+            "mouse", "keyboard", "输入法", "wetype", "clipboard", "translucent",
+            "powertoys", "toolbox", "工具箱", "unlocker", "cleaner", "optimizer",
+            "clash", "v2ray", "proxy", "vpn", "加速器", "accelerator",
+            "everything", "autoruns", "7-zip", "winrar", "bandizip",
+            "download", "idman", "thunder", "uninstaller", "tweak",
+        ]),
+    ];
+
+    /// <summary>在给定文本里按关键字表找分类，未命中返回 null。</summary>
+    private static string? MatchKeywords(string haystack)
+    {
+        if (string.IsNullOrEmpty(haystack)) return null;
+        foreach (var (category, keywords) in KeywordRules)
+            foreach (var k in keywords)
+                if (haystack.Contains(k, StringComparison.Ordinal))
+                    return category;
+        return null;
+    }
 
     public static string Classify(string processName, string exePath, string company, string title)
     {
@@ -161,7 +229,11 @@ public static class CategoryService
                 if (fileName == n)
                     return category;
 
-        // 3) 路径段匹配：仅对长度 >3 的关键字做段内包含，避免短关键字（wt/et/nx）误命中
+        // 3) 关键字包含（进程名 / 文件名）：覆盖没进精确名单的新软件
+        var byName = MatchKeywords(nameNoExt + " " + fileName);
+        if (byName != null) return byName;
+
+        // 4) 路径段匹配：仅对长度 >3 的关键字做段内包含，避免短关键字（wt/et/nx）误命中
         foreach (var (category, names) in Rules)
         {
             foreach (var n in names)
@@ -176,13 +248,21 @@ public static class CategoryService
             }
         }
 
-        // 4) 厂商兜底（仅对指向明确的厂商）
+        // 5) 关键字包含（安装目录）：`D:\游戏\原神\launcher.exe` 这类靠目录名也能认出来
+        var byPath = MatchKeywords(string.Join(" ", pathSegments));
+        if (byPath != null) return byPath;
+
+        // 6) 厂商兜底（仅对指向明确的厂商）
         var co = (company ?? "").ToLowerInvariant();
         if (co.Contains("adobe")) return "开发与创作";
         if (co.Contains("autodesk")) return "开发与创作";
         if (co.Contains("valve")) return "游戏";
         if (co.Contains("epic games")) return "游戏";
+        if (co.Contains("rovio")) return "游戏";
+        if (co.Contains("ubisoft")) return "游戏";
         if (co.Contains("nvidia")) return "系统与工具";
+        if (co.Contains("a-volute") || co.Contains("senary")) return "系统与工具";
+        if (co.Contains("anthropic") || co.Contains("openai")) return "办公与文档";
         if (co.Contains("mihoyo") || co.Contains("hoyoverse")) return "游戏";
         if (co.Contains("microsoft")) return "系统与工具";
 
