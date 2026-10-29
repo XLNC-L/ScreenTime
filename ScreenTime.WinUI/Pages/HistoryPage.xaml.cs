@@ -15,12 +15,17 @@ public partial class HistoryPage : Page
     public HistoryPage()
     {
         InitializeComponent();
+        // 不做导航缓存（默认 Disabled）：见 TodayPage 注释——缓存会让托盘隐藏时页面释放不掉。
+        // 切页重建成本可接受，筛选状态在页面内重建（日期默认近 7 天）。
         Donut.SliceTapped += cat => App.Current.DrillToCategory(cat);
         FromPicker.Date = new DateTimeOffset(DateTime.Today.AddDays(-7));
         ToPicker.Date = new DateTimeOffset(DateTime.Today);
         LeftCol.SizeChanged += (_, e) => AppRankCard.Height = e.NewSize.Height;
         Loaded += (_, _) => RunQuery();
     }
+
+    /// <summary>主题切换：重跑查询重建配色（7 天数据量小），不重建页面。</summary>
+    public void RefreshTheme() => RunQuery();
 
     private void QueryBtn_Click(object sender, RoutedEventArgs e) => RunQuery();
 

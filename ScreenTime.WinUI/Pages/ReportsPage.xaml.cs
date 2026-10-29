@@ -17,9 +17,14 @@ public partial class ReportsPage : Page
     public ReportsPage()
     {
         InitializeComponent();
+        // 不做导航缓存（默认 Disabled）：见 TodayPage 注释——缓存会让托盘隐藏时页面释放不掉。
+        // 切页重建成本可接受，周期锚点重建为当前月/周。
         Donut.SliceTapped += cat => App.Current.DrillToCategory(cat);
         Loaded += (_, _) => LoadReport();
     }
+
+    /// <summary>主题切换：重跑报表重建配色，不重建页面。</summary>
+    public void RefreshTheme() => LoadReport();
 
     private void ModeBtn_Click(object sender, RoutedEventArgs e)
     {

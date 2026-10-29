@@ -92,6 +92,7 @@
                 </NavigationViewItem>
             </NavigationView.MenuItems>
 
+            <!-- 页面不做导航缓存（隐藏到托盘时靠 Content=null 释放页面，缓存会挡住回收） -->
             <Frame x:Name="ContentFrame" />
         </NavigationView>
 

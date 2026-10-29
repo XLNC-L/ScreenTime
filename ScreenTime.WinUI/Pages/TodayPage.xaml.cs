@@ -19,6 +19,10 @@ public partial class TodayPage : Page
     private int _ticks;
     private string _dayKey = "";
 
+    /// <summary>时间线全量重建的防抖（拖拽窗口时 SizeChanged 连发）与降频（5 分钟才重画）状态。</summary>
+    private readonly DispatcherTimer _timelineDebounce = new() { Interval = TimeSpan.FromMilliseconds(150) };
+    private DateTime _lastTimelineDraw = DateTime.MinValue;
+
     private List<TimelineRow> _timeline = new();
 
     // 时间线游标状态：全量重建后缓存范围参数，秒级 tick 只平移游标、不重建时间线
@@ -30,6 +34,10 @@ public partial class TodayPage : Page
     public TodayPage()
     {
         InitializeComponent();
+        // 不做导航缓存（NavigationCacheMode 默认 Disabled）：
+        // 关闭窗口到托盘时会置空 ContentFrame.Content 释放页面，
+        // 一旦 Required 缓存，Frame 会强引用页面实例，显示态内存（时间线/排行/图表）就永远还不了。
+        // 切页重建成本已被查询提速 + 虚拟化摊薄，可接受。
 
         Donut.SliceTapped += cat => App.Current.DrillToCategory(cat);
 
@@ -43,8 +51,23 @@ public partial class TodayPage : Page
             RefreshCharts();
             _timer.Start();
         };
-        Unloaded += (_, _) => _timer.Stop();
-        TimelineGrid.SizeChanged += (_, _) => DrawTimeline();
+        Unloaded += (_, _) =>
+        {
+            _timer.Stop();
+            _timelineDebounce.Stop();
+        };
+        // 窗口拖拽会连续触发 SizeChanged：150ms 防抖后只重画一次，避免连续全量重建
+        TimelineGrid.SizeChanged += (_, _) =>
+        {
+            _timelineDebounce.Stop();
+            _timelineDebounce.Start();
+        };
+        _timelineDebounce.Tick += (_, _) =>
+        {
+            _timelineDebounce.Stop();
+            _lastTimelineDraw = DateTime.MinValue; // 强制重画
+            DrawTimeline();
+        };
     }
 
     /// <summary>
@@ -62,8 +85,9 @@ public partial class TodayPage : Page
         var dayKey = DateTime.Now.ToString("yyyy-MM-dd");
         if (dayKey != _dayKey)
         {
-            // 跨天：日期、时间线范围全变，直接全量刷新
+            // 跨天：日期、时间线范围全变，直接全量刷新（时间线强制重建，不能被降频挡掉）
             _dayKey = dayKey;
+            _lastTimelineDraw = DateTime.MinValue;
             RefreshNumbers();
             RefreshCharts();
             return;
@@ -158,7 +182,27 @@ public partial class TodayPage : Page
         LoadPurpose(from, to);
 
         _timeline = _db.QueryTimeline(today);
-        DrawTimeline();
+        // 时间线全量重建降频：30 秒节拍里，5 分钟内不重画整条轨道——
+        // 期间新片段对轨道形状影响很小，游标由秒级 tick 平滑平移即可；
+        // 跨天 / 主题切换 / 窗口尺寸变化走强制重建（上面已把 _lastTimelineDraw 置 MinValue）。
+        if (DateTime.UtcNow - _lastTimelineDraw > TimeSpan.FromMinutes(5))
+            DrawTimeline();
+    }
+
+    /// <summary>主题切换入口：仅重绘图表配色并强制重画时间线，不重建页面实例。</summary>
+    public void RefreshTheme()
+    {
+        try
+        {
+            _lastTimelineDraw = DateTime.MinValue; // 时间线 bar 颜色也依赖色板，必须重画
+            RefreshChartsCore();
+            ErrorBar.IsOpen = false;
+        }
+        catch (Exception ex)
+        {
+            ErrorBar.Message = ex.Message;
+            ErrorBar.IsOpen = true;
+        }
     }
 
     /// <summary>
@@ -233,6 +277,7 @@ public partial class TodayPage : Page
 
     private void DrawTimeline()
     {
+        _lastTimelineDraw = DateTime.UtcNow;
         TimelineGrid.Children.Clear();
         HourLabels.Children.Clear();
         _cursor = null;

@@ -170,21 +170,27 @@
                             <RowDefinition Height="*" />
                         </Grid.RowDefinitions>
                         <TextBlock Grid.Row="0" Style="{StaticResource SubtitleTextBlockStyle}" Text="应用排行" />
-                        <ScrollViewer Grid.Row="1" Margin="0,12,0,0">
-                            <ItemsControl x:Name="AppList">
-                                <ItemsControl.ItemTemplate>
-                                    <DataTemplate>
-                                        <Grid Margin="0,4">
-                                            <Grid.RowDefinitions>
-                                                <RowDefinition Height="Auto" />
-                                                <RowDefinition Height="Auto" />
-                                            </Grid.RowDefinitions>
-                                            <Grid Grid.Row="0">
-                                                <Grid.ColumnDefinitions>
-                                                    <ColumnDefinition Width="Auto" />
-                                                    <ColumnDefinition Width="*" />
-                                                    <ColumnDefinition Width="Auto" />
-                                                </Grid.ColumnDefinitions>
+                        <!-- 用 ListView 而不是 ItemsControl+ScrollViewer：ItemsControl 无虚拟化，
+                             几十个应用 × 每项 5 控件全部实例化，内存和布局都吃亏。ListView 自带虚拟化 + 滚动 -->
+                        <ListView
+                            x:Name="AppList"
+                            Grid.Row="1"
+                            Margin="0,12,0,0"
+                            SelectionMode="None"
+                            IsItemClickEnabled="False">
+                            <ListView.ItemTemplate>
+                                <DataTemplate>
+                                    <Grid Margin="0,4">
+                                        <Grid.RowDefinitions>
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="Auto" />
+                                        </Grid.RowDefinitions>
+                                        <Grid Grid.Row="0">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="Auto" />
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
                                                 <Image
                                                     Grid.Column="0"
                                                     Width="24"
@@ -207,10 +213,9 @@
                                             <ProgressBar Grid.Row="1" Margin="0,3,0,0" Maximum="100" Value="{Binding BarPercent}" />
                                         </Grid>
                                     </DataTemplate>
-                                </ItemsControl.ItemTemplate>
-                            </ItemsControl>
-                        </ScrollViewer>
-                    </Grid>
+                                </ListView.ItemTemplate>
+                            </ListView>
+                        </Grid>
                 </Border>
             </Grid>
 

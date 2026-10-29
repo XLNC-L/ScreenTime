@@ -1,3 +1,6 @@
+using System.Runtime;
+using System.Threading;
+using System.Threading.Tasks;
 using Microsoft.UI;
 using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
@@ -15,6 +18,7 @@ public partial class MainWindow : Window
     private AppWindow _appWindow;
     private long _purposeSegmentId;
     private object? _navParam;
+    private string? _currentTag;
 
     public MainWindow()
     {
@@ -58,25 +62,68 @@ public partial class MainWindow : Window
         RefreshInboxBadge();
     }
 
+    /// <summary>
+    /// 关闭窗口 = 隐藏到托盘，不退出进程。
+    /// 同时释放页面可视树与图标缓存，并延迟触发一次积极 GC：
+    /// 页面不做导航缓存（见各页面注释），Content=null 后没有其他强引用，
+    /// 时间线/排行/图表对象图会被真正回收——这是 WinUI 3 托盘态内存瘦身的关键。
+    /// 注意：不能销毁窗口，WinUI 3 最后一个窗口关闭后进程会直接退出。
+    /// </summary>
     private void OnClosing(AppWindow sender, AppWindowClosingEventArgs args)
     {
-        // 关闭窗口 = 最小化到托盘，不退出
         args.Cancel = true;
         _appWindow.Hide();
+        ReleaseUiForTray();
     }
+
+    private void ReleaseUiForTray()
+    {
+        // WinUI 3 的 Frame 导航栈/缓存可能持有页面实例（已知泄漏点）：
+        // 清空 Back/Forward 栈后再卸 Content，确保页面对象图无外部引用、能被 GC 回收。
+        // （用内存转储验证过：隐藏后 TodayPage 已从 GC 堆移除——释放链路有效）
+        ContentFrame.BackStack.Clear();
+        ContentFrame.ForwardStack.Clear();
+        ContentFrame.Content = null;
+        AppIconService.ClearUiCache();
+        _ = Task.Delay(500).ContinueWith(_ =>
+        {
+            try
+            {
+                GC.Collect(2, GCCollectionMode.Aggressive, true, true);
+                GC.WaitForPendingFinalizers();
+                GCSettings.LargeObjectHeapCompactionMode = GCLargeObjectHeapCompactionMode.CompactOnce;
+                GC.Collect(2, GCCollectionMode.Aggressive, true, true);
+                // .NET 堆段申请后不还给 OS（Private 不变），但页面对象已回收，
+                // 主动修剪工作集让 Windows 把空闲物理页收回去——任务管理器里的
+                // 「内存」列（工作集）会立刻回到接近 silent 底数的水平。
+                using var self = System.Diagnostics.Process.GetCurrentProcess();
+                SetProcessWorkingSetSize(self.Handle, new IntPtr(-1), new IntPtr(-1));
+            }
+            catch { }
+        }, CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+    }
+
+    [System.Runtime.InteropServices.DllImport("kernel32.dll")]
+    private static extern bool SetProcessWorkingSetSize(IntPtr hProcess, IntPtr dwMinimumWorkingSetSize, IntPtr dwMaximumWorkingSetSize);
 
     private void OnThemeChanged(FrameworkElement sender, object args)
     {
+        // 主题切换不再整页重建：只更新色板，让当前页重绘图表配色（快得多，且保留页面状态）
         CategoryPalette.CurrentTheme = ContentFrame.ActualTheme;
-        if (ContentFrame.CurrentSourcePageType is { } type)
-            ContentFrame.Navigate(type, _navParam);
+        if (ContentFrame.Content is IThemeRefreshable refreshable)
+            refreshable.RefreshTheme();
     }
 
     private void Nav_SelectionChanged(NavigationView sender, NavigationViewSelectionChangedEventArgs args)
     {
         if (args.SelectedItem is not NavigationViewItem item || item.Tag is not string tag)
             return;
+        _currentTag = tag;
+        NavigateTo(tag);
+    }
 
+    private void NavigateTo(string tag, bool force = false)
+    {
         var pageType = tag switch
         {
             "today" => typeof(TodayPage),
@@ -89,7 +136,9 @@ public partial class MainWindow : Window
             _ => null
         };
 
-        if (pageType != null && ContentFrame.CurrentSourcePageType != pageType)
+        // force：隐藏到托盘时 Content 被置 null 释放页面，但 CurrentSourcePageType 仍指向原页面，
+        // 不强制导航会直接跳过，恢复显示时白屏
+        if (pageType != null && (force || ContentFrame.CurrentSourcePageType != pageType))
         {
             _navParam = null;
             ContentFrame.Navigate(pageType);
@@ -114,6 +163,9 @@ public partial class MainWindow : Window
     public void ShowAndActivate()
     {
         _appWindow.Show();
+        // 隐藏到托盘时释放了可视树（Content=null），重新显示要强制回到当前导航项
+        if (ContentFrame.Content == null && _currentTag != null)
+            NavigateTo(_currentTag, force: true);
         Activate();
     }
 

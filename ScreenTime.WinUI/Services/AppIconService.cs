@@ -28,6 +28,10 @@ public static class AppIconService
     /// <summary>显示尺寸 24 DIP；2x 缩放下 48 物理像素，解码限此尺寸即可，256 原图不占内存。</summary>
     private const int DecodePx = 48;
 
+    /// <summary>缓存条数上限：一台上用过的应用一般不到 200 个，256 足够；
+    /// 到顶整表清空一次（图标后台线程重新提取，不卡 UI），防止长期运行后无界增长。</summary>
+    private const int MaxCacheEntries = 256;
+
     public static ImageSource? GetIcon(string exePath) => GetIcon(exePath, null);
 
     /// <summary>UI 线程调用：取缓存字节并转 BitmapImage（未缓存时同步提取，可能卡，慎用）。</summary>
@@ -42,6 +46,7 @@ public static class AppIconService
         var img = BytesToImage(GetIconBytes(exePath, processName, iconSource));
         lock (UiLock)
         {
+            CapUiCache();
             UiCache[key] = img;
         }
         return img;
@@ -55,6 +60,15 @@ public static class AppIconService
         lock (UiLock)
         {
             return UiCache.TryGetValue(key, out var c) ? c : null;
+        }
+    }
+
+    /// <summary>隐藏到托盘时清空 UI 层 ImageSource 缓存，让显示态占用的位图走 GC。</summary>
+    public static void ClearUiCache()
+    {
+        lock (UiLock)
+        {
+            UiCache.Clear();
         }
     }
 
@@ -77,6 +91,7 @@ public static class AppIconService
         {
             if (BytesCache.TryGetValue(iconSource, out var cachedSource)) return cachedSource;
             var bytes = LoadPngBytes(iconSource);
+            CapBytesCache();
             BytesCache[iconSource] = bytes;
             if (bytes != null) return bytes;
         }
@@ -98,6 +113,7 @@ public static class AppIconService
             result = null;
         }
 
+        CapBytesCache();
         BytesCache[path] = result;
         return result;
     }
@@ -128,10 +144,23 @@ public static class AppIconService
         {
             lock (UiLock)
             {
+                CapUiCache();
                 UiCache[key] = img;
             }
         }
         return img;
+    }
+
+    /// <summary>字节缓存到顶整表清空（ConcurrentDictionary 无顺序，清一次即可控住总量）。</summary>
+    private static void CapBytesCache()
+    {
+        if (BytesCache.Count >= MaxCacheEntries) BytesCache.Clear();
+    }
+
+    /// <summary>UI 层缓存到顶整表清空，与 <see cref="CapBytesCache"/> 同策略。</summary>
+    private static void CapUiCache()
+    {
+        if (UiCache.Count >= MaxCacheEntries) UiCache.Clear();
     }
 
     /// <summary>直接读取一张图片文件（UWP 图标已由 UwpAppService 导出为 PNG）。</summary>
