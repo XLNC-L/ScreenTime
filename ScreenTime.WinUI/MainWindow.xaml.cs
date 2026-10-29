@@ -19,6 +19,7 @@ public partial class MainWindow : Window
     private long _purposeSegmentId;
     private object? _navParam;
     private string? _currentTag;
+    private System.Threading.Timer? _idleTrimTimer;
 
     public MainWindow()
     {
@@ -60,6 +61,34 @@ public partial class MainWindow : Window
         }
         Nav.SelectedItem = initial;
         RefreshInboxBadge();
+
+        // 长期驻留内存平稳：窗口在托盘态（Content 已释放）时，每 30 分钟
+        // 主动做一次 GC + 工作集修剪，防止长会话内堆与物理页缓慢爬升。
+        _idleTrimTimer = new System.Threading.Timer(_ => MaybeTrimIdle(),
+            null, TimeSpan.FromMinutes(30), TimeSpan.FromMinutes(30));
+    }
+
+    /// <summary>仅当处于托盘隐藏态（可视树已释放）时做一次积极回收 + 工作集修剪。
+    /// 后台线程回调只负责投递，判定与执行都在 UI 线程。</summary>
+    private void MaybeTrimIdle()
+    {
+        if (_appWindow == null || DispatcherQueue == null) return;
+        DispatcherQueue.TryEnqueue(TrimForIdle);
+    }
+
+    private void TrimForIdle()
+    {
+        if (ContentFrame.Content != null) return;
+        try
+        {
+            GC.Collect(2, GCCollectionMode.Aggressive, true, true);
+            GC.WaitForPendingFinalizers();
+            GCSettings.LargeObjectHeapCompactionMode = GCLargeObjectHeapCompactionMode.CompactOnce;
+            GC.Collect(2, GCCollectionMode.Aggressive, true, true);
+            using var self = System.Diagnostics.Process.GetCurrentProcess();
+            SetProcessWorkingSetSize(self.Handle, new IntPtr(-1), new IntPtr(-1));
+        }
+        catch { }
     }
 
     /// <summary>

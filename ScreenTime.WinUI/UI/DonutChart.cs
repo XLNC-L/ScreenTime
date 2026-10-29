@@ -26,6 +26,7 @@ public sealed class DonutChart : UserControl
             new PropertyMetadata(null, OnSlicesChanged));
 
     private readonly Canvas _canvas;
+    private readonly DispatcherTimer _renderTimer;
 
     /// <summary>点击扇区（参数：分类名），用于下钻。</summary>
     public event Action<string>? SliceTapped;
@@ -40,12 +41,22 @@ public sealed class DonutChart : UserControl
     {
         _canvas = new Canvas();
         Content = _canvas;
-        SizeChanged += (_, _) => Render();
+        // 拖动窗口边缘时 SizeChanged 连续触发，直接 Render 会每帧重绘环形图。
+        // 防抖 100ms：只在尺寸稳定后重绘一次。
+        _renderTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(100) };
+        _renderTimer.Tick += (_, _) => { _renderTimer.Stop(); Render(); };
+        SizeChanged += (_, _) => ScheduleRender();
     }
 
     private static void OnSlicesChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
     {
-        ((DonutChart)d).Render();
+        ((DonutChart)d).ScheduleRender();
+    }
+
+    private void ScheduleRender()
+    {
+        _renderTimer.Stop();
+        _renderTimer.Start();
     }
 
     private void Render()

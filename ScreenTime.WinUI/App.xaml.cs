@@ -42,7 +42,10 @@ public partial class App : Application
 
         Database = new Database(CommandLineValue("--db="));
         Database.Init();
-        Database.Migrate();
+        // 结构升级/数据迁移（重分类、去重、补列）对大库可能较慢，
+        // 放后台线程执行，不挡窗口出现。新库 Init 已带全部列，旧库由 Migrate 幂等补齐；
+        // 采集心跳 5 秒后才首次写库，与迁移有充分缓冲，SQLite WAL + busy_timeout 兜底并发。
+        _ = System.Threading.Tasks.Task.Run(Database.Migrate);
         Watcher = new WatcherService(Database);
         HistoryImport = new HistoryImportService(Database);
     }

@@ -135,15 +135,18 @@ public sealed class WatcherService : IDisposable
 
         // 历史碎片清理：旧版本在标题变化时无脑切分，留下大量零长度片段。
         // 启动时把最近 7 天的过短片段并入相邻同应用片段，之后由心跳增量维护。
-        try
-        {
-            _db.MergeShortSegments(MinSegmentSeconds, DateTime.UtcNow.AddDays(-7));
-            _lastCompactUtc = DateTime.UtcNow;
-        }
-        catch { /* 清理失败不影响采集 */ }
-
-        ScrubOldTitles();
+        // 这段对大库可能跑一两秒，放后台线程，不挡窗口出现。
+        _lastCompactUtc = DateTime.UtcNow;
         _timer.Change(TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(5));
+        _ = System.Threading.Tasks.Task.Run(() =>
+        {
+            try
+            {
+                _db.MergeShortSegments(MinSegmentSeconds, DateTime.UtcNow.AddDays(-7));
+                ScrubOldTitles();
+            }
+            catch { /* 清理失败不影响采集 */ }
+        });
         SafeHeartbeat();
     }
 

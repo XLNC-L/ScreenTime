@@ -170,6 +170,9 @@ public sealed class Database
                 app_name TEXT NOT NULL DEFAULT '',
                 company TEXT NOT NULL DEFAULT '',
                 category TEXT NOT NULL DEFAULT '未分类',
+                category_manual INTEGER NOT NULL DEFAULT 0,
+                default_purpose TEXT NOT NULL DEFAULT '',
+                icon_source TEXT NOT NULL DEFAULT '',
                 merged_into INTEGER NOT NULL DEFAULT 0,
                 ignored INTEGER NOT NULL DEFAULT 0,
                 UNIQUE(exe_path, process_name)
@@ -182,6 +185,9 @@ public sealed class Database
                 start_ts TEXT NOT NULL,
                 end_ts TEXT NOT NULL,
                 title TEXT NOT NULL DEFAULT '',
+                purpose TEXT NOT NULL DEFAULT '',
+                site TEXT NOT NULL DEFAULT '',
+                url TEXT NOT NULL DEFAULT '',
                 day TEXT NOT NULL,
                 FOREIGN KEY(app_id) REFERENCES apps(id)
             );

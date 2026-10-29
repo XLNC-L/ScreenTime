@@ -65,12 +65,44 @@ public partial class ReportsPage : Page
         }
     }
 
-    /// <summary>报表涉及多次查询，任一失败都不该让整页崩掉——出问题就把原因显示在页面上。</summary>
-    private void LoadReport()
+    /// <summary>报表涉及多次查询，任一失败都不该让整页崩掉——出问题就把原因显示在页面上。
+    /// 查询在后台线程跑，避免大库时切月/切周卡 UI。</summary>
+    private int _reportVersion;
+
+    private async void LoadReport()
     {
+        var version = ++_reportVersion;
         try
         {
-            LoadReportCore();
+            var (from, to, prevFrom, prevTo, label) = GetRange();
+            RangeLabel.Text = label;
+
+            // 当前周期可能还没走完：只统计"已经过去的时间"，
+            // 否则当月 28 号的日均会被整月 31 天除低。
+            var now = DateTime.UtcNow;
+            var effectiveTo = to > now ? now : to;
+            if (effectiveTo <= from) effectiveTo = from.AddMinutes(1);
+            var elapsed = effectiveTo - from;
+            var dayCount = Math.Max(1, (int)Math.Ceiling(elapsed.TotalDays));
+
+            // 环比取上一周期的同等长度区间：半个月不该跟整月比，否则永远是"下降"
+            var prevClipTo = prevFrom + elapsed;
+            if (prevClipTo > prevTo) prevClipTo = prevTo;
+
+            ReportData data;
+            try
+            {
+                data = await Task.Run(() => QueryReportData(from, effectiveTo, prevFrom, prevClipTo));
+            }
+            catch (Exception ex)
+            {
+                RangeLabel.Text = $"统计加载失败：{ex.Message}";
+                return;
+            }
+
+            // 等待期间用户可能又切了月/周/主题：过期结果直接丢弃，避免闪烁
+            if (version != _reportVersion) return;
+            BindReport(data, from, effectiveTo, dayCount);
         }
         catch (Exception ex)
         {
@@ -78,36 +110,34 @@ public partial class ReportsPage : Page
         }
     }
 
-    private void LoadReportCore()
+    private sealed record ReportData(
+        List<AppUsageRow> Apps,
+        List<(DateTime Start, DateTime End, int AppId, string Kind)> Segments,
+        double PrevTotal,
+        List<(string Purpose, double TotalSeconds)> Purposes);
+
+    /// <summary>后台线程执行的纯查询部分：四个区间扫描 + 环比并集计算。</summary>
+    private ReportData QueryReportData(DateTime from, DateTime to, DateTime prevFrom, DateTime prevTo)
     {
-        var (from, to, prevFrom, prevTo, label) = GetRange();
-        RangeLabel.Text = label;
-
-        // 当前周期可能还没走完：只统计"已经过去的时间"，
-        // 否则当月 28 号的日均会被整月 31 天除低。
-        var now = DateTime.UtcNow;
-        var effectiveTo = to > now ? now : to;
-        if (effectiveTo <= from) effectiveTo = from.AddMinutes(1);
-        var elapsed = effectiveTo - from;
-        var dayCount = Math.Max(1, (int)Math.Ceiling(elapsed.TotalDays));
-
-        // 环比取上一周期的同等长度区间：半个月不该跟整月比，否则永远是"下降"
-        var prevClipTo = prevFrom + elapsed;
-        if (prevClipTo > prevTo) prevClipTo = prevTo;
-
-        var apps = _db.QueryAppUsage(from, effectiveTo);
-        var segments = _db.QuerySegments(from, effectiveTo);
-        var totalSec = StatsService.UnionSeconds(segments.Select(s => (s.Start, s.End)).ToList());
-
-        var prevSegs = _db.QuerySegments(prevFrom, prevClipTo);
+        var apps = _db.QueryAppUsage(from, to);
+        var segments = _db.QuerySegments(from, to);
+        var prevSegs = _db.QuerySegments(prevFrom, prevTo);
         var prevTotal = StatsService.UnionSeconds(prevSegs.Select(s => (s.Start, s.End)).ToList());
+        var purposes = _db.QueryPurposeUsage(from, to);
+        return new ReportData(apps, segments, prevTotal, purposes);
+    }
+
+    /// <summary>UI 线程绑定：由查询结果计算展示数据并填充控件。</summary>
+    private void BindReport(ReportData data, DateTime from, DateTime effectiveTo, int dayCount)
+    {
+        var totalSec = StatsService.UnionSeconds(data.Segments.Select(s => (s.Start, s.End)).ToList());
 
         TotalText.Text = StatsService.FormatDuration(totalSec);
         AvgText.Text = StatsService.FormatDuration(totalSec / dayCount);
 
-        if (prevTotal > 0)
+        if (data.PrevTotal > 0)
         {
-            var ratio = (totalSec - prevTotal) / prevTotal * 100;
+            var ratio = (totalSec - data.PrevTotal) / data.PrevTotal * 100;
             DeltaText.Text = $"{ratio:+0.0;-0.0}%";
             // 屏幕时间变多是"值得注意"的信号，用警示色；变少才是正向
             DeltaText.Foreground = (ratio >= 0
@@ -121,17 +151,15 @@ public partial class ReportsPage : Page
         }
 
         // 每日柱状（只到已过去的日期，不再画未来空白柱）。
-        // 原来逐日调用 QuerySegments + QueryAppUsage，一个月 = 60+ 次查询，全在 UI 线程，
-        // 切月会明显卡一下。现在复用上面已拉取的 segments，内存里按本地日切分：
-        // 与逐日查询同源同语义（片段与当日窗口重叠即整条计入该日）。
-        var catByApp = apps.ToDictionary(a => a.AppId, a => a.Category);
+        // 复用上面已拉取的 segments，内存里按本地日切分，不再逐日查库。
+        var catByApp = data.Apps.ToDictionary(a => a.AppId, a => a.Category);
         var dayTotals = new List<(DateTime Day, double Seconds)>();
         var dayLeadCat = new Dictionary<DateTime, string>();
         foreach (var day in StatsService.EachDay(from, effectiveTo))
         {
             var df = day.ToUniversalTime();
             var dt = day.AddDays(1).ToUniversalTime();
-            var daySegs = segments.Where(s => s.Start < dt && s.End > df).ToList();
+            var daySegs = data.Segments.Where(s => s.Start < dt && s.End > df).ToList();
 
             var secByApp = new Dictionary<int, double>();
             foreach (var (s, e, appId, _) in daySegs)
@@ -158,7 +186,7 @@ public partial class ReportsPage : Page
         }).ToList();
 
         // 分类占比
-        var byCategory = apps.GroupBy(a => a.Category)
+        var byCategory = data.Apps.GroupBy(a => a.Category)
             .Select(g => new { Category = g.Key, Seconds = g.Sum(a => a.TotalSeconds) })
             .OrderByDescending(x => x.Seconds).ToList();
         var catTotal = byCategory.Sum(x => x.Seconds);
@@ -168,10 +196,9 @@ public partial class ReportsPage : Page
                 catTotal > 0 ? $"{x.Seconds / catTotal * 100:0}%" : "0%")).ToList();
 
         // 最活跃时段：按小时切分累计。
-        // 旧逻辑把整条片段算给"中点所在的那个小时"，一条跨 3 小时的片段会
-        // 把 3 小时全压进 1 格，热力条严重偏斜。
+        // 整条片段按重叠区间拆到每个小时，跨 3 小时的片段不会全压进 1 格。
         var hourSec = new double[24];
-        foreach (var (s, e, _, _) in segments)
+        foreach (var (s, e, _, _) in data.Segments)
         {
             var cursor = s.ToLocalTime();
             var endLocal = e.ToLocalTime();
@@ -221,16 +248,15 @@ public partial class ReportsPage : Page
             ? $"最活跃 {peak:00}:00 – {peak + 1:00}:00，累计 {StatsService.FormatDuration(maxHourSec)}"
             : "暂无数据";
 
-        TopApps.ItemsSource = apps.OrderByDescending(a => a.TotalSeconds).Take(8)
+        TopApps.ItemsSource = data.Apps.OrderByDescending(a => a.TotalSeconds).Take(8)
             .Select(a => new { Name = a.AppName, Duration = StatsService.FormatDuration(a.TotalSeconds) })
             .ToList();
 
-        LoadPurpose(from, to);
+        BindPurpose(data.Purposes);
     }
 
-    private void LoadPurpose(DateTime fromUtc, DateTime toUtc)
+    private void BindPurpose(List<(string Purpose, double TotalSeconds)> purposes)
     {
-        var purposes = _db.QueryPurposeUsage(fromUtc, toUtc);
         var total = purposes.Sum(p => p.TotalSeconds);
 
         PurposeBar.Children.Clear();
