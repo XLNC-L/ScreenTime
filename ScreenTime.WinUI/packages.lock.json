@@ -171,6 +171,13 @@
           "System.Collections.Immutable": "9.0.1"
         }
       },
+      "screentime.collect": {
+        "type": "Project",
+        "dependencies": {
+          "Microsoft.Win32.SystemEvents": "[9.0.1, )",
+          "ScreenTime.Core": "[1.0.0, )"
+        }
+      },
       "screentime.core": {
         "type": "Project",
         "dependencies": {

@@ -1,5 +1,4 @@
 using System.Diagnostics;
-using Microsoft.UI.Dispatching;
 using ScreenTime.Data;
 using ScreenTime.Native;
 
@@ -34,11 +33,8 @@ public sealed class WatcherService : IDisposable
     private readonly BrowserTabService _browserTabs = new();
     private readonly System.Threading.Timer _timer;
 
-    /// <summary>采集节拍互斥：心跳在后台线程跑，UI 线程也可能读改同一批状态。</summary>
+    /// <summary>采集节拍互斥：心跳在后台线程跑，其他线程也可能读改同一批状态。</summary>
     private readonly object _gate = new();
-
-    /// <summary>用途标注要弹 TeachingTip，必须回到 UI 线程。</summary>
-    private readonly DispatcherQueue? _uiQueue = DispatcherQueue.GetForCurrentThread();
 
     /// <summary>本进程内已检查过图标的 app id，避免每个心跳都查库。</summary>
     private readonly HashSet<int> _iconChecked = new();
@@ -410,13 +406,9 @@ public sealed class WatcherService : IDisposable
 
         var rowId = seg.RowId;
         var process = seg.ProcessName;
-        void Fire()
-        {
-            try { PurposePrompt?.Invoke(rowId, process); } catch { }
-        }
-
-        // 心跳在后台线程，订阅方（MainWindow）要操作 TeachingTip，必须回 UI 线程
-        if (_uiQueue is null || !_uiQueue.TryEnqueue(Fire)) { /* 无窗口时没人订阅，直接丢弃 */ }
+        // 事件在采集线程触发，订阅方自行处理线程切换：
+        // UI 进程走轮询（读库 pending_purpose），Agent 进程在后台写库，都不需要 DispatcherQueue。
+        try { PurposePrompt?.Invoke(rowId, process); } catch { }
     }
 
     /// <summary>用途标注回调：更新当前前台片段用途（若仍在该片段）。</summary>

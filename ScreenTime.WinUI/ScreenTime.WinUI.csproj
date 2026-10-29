@@ -34,6 +34,8 @@
   <ItemGroup>
     <!-- 纯逻辑层（数据访问 / 分类 / 统计 / 用途），不依赖 WinUI，便于单元测试 -->
     <ProjectReference Include="..\ScreenTime.Core\ScreenTime.Core.csproj" />
+    <!-- 采集组件（前台/音频/会话事件/UWP 图标回填），与 UI 进程解耦后可被采集器进程复用 -->
+    <ProjectReference Include="..\ScreenTime.Collect\ScreenTime.Collect.csproj" />
   </ItemGroup>
 
   <ItemGroup>
