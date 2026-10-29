@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.IO;
 using System.IO.Pipes;
 using System.Security.AccessControl;
@@ -17,11 +18,9 @@ public partial class App : Application
     private const string ActivatePipeName = "ScreenTime_Activate";
 
     private MainWindow? _mainWindow;
-    private TrayService? _tray;
     private DispatcherQueue? _uiQueue;
 
     public Database Database { get; private set; } = null!;
-    public WatcherService Watcher { get; private set; } = null!;
     public HistoryImportService HistoryImport { get; private set; } = null!;
 
     public static new App Current => (App)Application.Current;
@@ -44,9 +43,8 @@ public partial class App : Application
         Database.Init();
         // 结构升级/数据迁移（重分类、去重、补列）对大库可能较慢，
         // 放后台线程执行，不挡窗口出现。新库 Init 已带全部列，旧库由 Migrate 幂等补齐；
-        // 采集心跳 5 秒后才首次写库，与迁移有充分缓冲，SQLite WAL + busy_timeout 兜底并发。
+        // 采集由 Agent 进程负责，Agent 心跳 5 秒后才首次写库，与迁移有充分缓冲。
         _ = System.Threading.Tasks.Task.Run(Database.Migrate);
-        Watcher = new WatcherService(Database);
         HistoryImport = new HistoryImportService(Database);
     }
 
@@ -152,28 +150,27 @@ public partial class App : Application
             }
         }
 
-        Watcher.Start();
+        // 采集/托盘/自启由 Agent 进程（ScreenTime.Agent.exe）承担，UI 进程不常驻。
+        // 启动时确保它在跑：不在则拉起（Agent 有自己单实例，多拉无害）。
+        EnsureAgentRunning();
         HistoryImport.Start();
-
-        // UWP 应用的图标不在 exe 里：启动后补一次，
-        // 覆盖「用过了但还没手动导入」的应用，不必等用户点「导入已安装应用」。
-        _ = System.Threading.Tasks.Task.Run(() => UwpAppService.BackfillIconsAsync(Database));
         StartActivationListener();
 
-        // 注意：WinUI 3 桌面应用的 LaunchActivatedEventArgs.Arguments 不包含命令行，
-        // 必须用 Environment.GetCommandLineArgs() 读取静默参数。
-        var cmdLine = Environment.GetCommandLineArgs();
+        _mainWindow = new MainWindow();
+        _mainWindow.Activate();
+    }
 
-        // 托盘独立于主窗口，始终创建
-        _tray = new TrayService();
-
-        bool silent = cmdLine.Any(a => a.Equals("--silent", StringComparison.OrdinalIgnoreCase));
-        if (!silent)
+    /// <summary>确保采集器进程在跑（Agent 常驻托盘负责采集；UI 显示完退出不影响采集）。</summary>
+    private static void EnsureAgentRunning()
+    {
+        try
         {
-            _mainWindow = new MainWindow();
-            _mainWindow.Activate();
+            if (Process.GetProcessesByName("ScreenTime.Agent").Length > 0) return;
+            var agentExe = Path.Combine(AppContext.BaseDirectory, "ScreenTime.Agent.exe");
+            if (File.Exists(agentExe))
+                Process.Start(new ProcessStartInfo(agentExe) { UseShellExecute = true });
         }
-        // 静默启动：不创建主窗口，避免隐藏窗口占据前台、干扰真实应用统计
+        catch { }
     }
 
     /// <summary>主窗口句柄（供文件/文件夹选择器初始化）。</summary>
@@ -206,14 +203,18 @@ public partial class App : Application
         _mainWindow?.DrillToCategory(category);
     }
 
+    /// <summary>设置变更信号：Agent 采集器轮询到版本号变化后热重载（音频/用途/浏览器开关等）。</summary>
+    public static void SignalSettingsChanged()
+    {
+        try { Current.Database.SetSetting("settings_version", DateTime.UtcNow.Ticks.ToString()); } catch { }
+    }
+
     /// <summary>刷新收件箱导航徽标。</summary>
     public void RefreshInboxBadge() => _mainWindow?.RefreshInboxBadge();
 
     public void ExitApp()
     {
-        try { Watcher.Dispose(); } catch { }
         try { HistoryImport.Dispose(); } catch { }
-        try { _tray?.Dispose(); } catch { }
         Exit();
     }
 

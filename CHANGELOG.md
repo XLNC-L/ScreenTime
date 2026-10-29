@@ -4,6 +4,29 @@
 
 ---
 
+## v1.2.0（2026-10-29）采集与 UI 双进程架构（第三档）
+
+**核心变化：托盘常驻态内存从 ~110MB（Private）压到 ~13-16MB。**
+
+- **采集组件抽离为 `ScreenTime.Collect` 类库**（提交 `a0b57bf`，git 识别为纯 rename，可单独回退）：
+  `Native\{Win32, AudioMonitor, DisplayStateWatcher, SessionState, UIAutomation}` + `Services\{WatcherService, BrowserTabService, UwpAppService}` 整体移入。
+  WatcherService 移除 DispatcherQueue 依赖（PurposePrompt 直接回调，线程切换交由订阅方），为无 UI 进程复用铺路。
+- **新增 `ScreenTime.Agent` 采集器进程**（无 UI 的 WinExe，可独立回退）：
+  - 纯 Win32 托盘（NOTIFYICON + 隐藏消息窗口 + TrackPopupMenu：打开统计 / 退出），不依赖 XAML。
+  - 常驻采集（前台窗口/音频/锁屏/会话事件）+ UWP 图标回填 + 开机自启注册（ONLOGON 无参数，任务名 `ScreenTime`）。
+  - 单实例 Mutex（`ScreenTime_Agent_Mutex`）；日志 `%APPDATA%\ScreenTime\agent.log`。
+  - 托盘「打开统计」启动同目录 ScreenTime.exe（UI 单实例自动唤起）。
+  - 旧 UI 自启任务自动迁移：Agent 启动时读取任务 XML，指向非自己则 /F 重建。
+  - **实测：常驻 Private 12.5-16MB**（原 WinUI 进程托盘态约 110MB Private / 75MB 框架底数）。
+- **UI 进程瘦身**（可独立回退）：
+  - 删除 Watcher 采集初始化、TrayService、--silent 托盘模式（采集/托盘/自启全部移交 Agent）。
+  - **关闭窗口即退出进程**（不再隐藏托盘）：显示态内存随进程一起释放，采集由 Agent 不中断。
+  - 启动时 EnsureAgentRunning：Agent 不在则拉起同目录 ScreenTime.Agent.exe。
+  - 用途标注跨进程：Agent 写 `settings.pending_purpose`，UI 每 30 秒轮询弹 TeachingTip（确认写库+清标记；取消仅清标记）。
+  - 设置热重载跨进程：UI 改音频/用途/浏览器开关后写 `settings_version`，Agent 每 10 秒轮询变化并 ReloadSettings。
+- **发布参数**：WinUI 与 Agent 均启用 PublishReadyToRun（发布时预热启动路径）。
+- 验证：构建 0 警告 0 错误；129 单测全过；全链路冒烟（seed 演示库 → Agent 常驻 16MB → UI 显示 122MB → 关闭窗口 UI 进程退出 → Agent 继续常驻并写库）。
+
 ## v1.1.2（2026-10-29）启动提速 + 常驻内存平稳 + 报表后台化
 
 - **启动提速**：`Database.Migrate()`（重分类/去重/补列，大库可能耗时数百毫秒到数秒）从启动同步路径移到后台线程；`Watcher.Start()` 的 7 天碎片清理 + 标题清洗同样移后台。冷启动窗口不再等数据迁移完成。新库建表已补齐全部列，旧库仍由 Migrate 幂等升级，采集心跳（5 秒后首次写库）与迁移有充分缓冲。

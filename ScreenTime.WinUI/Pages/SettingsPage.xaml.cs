@@ -87,21 +87,21 @@ public partial class SettingsPage : Page
     {
         if (_loading) return;
         App.Current.Database.SetSetting("audio_enabled", AudioSwitch.IsOn ? "true" : "false");
-        App.Current.Watcher.ReloadSettings();
+        App.SignalSettingsChanged();
     }
 
     private void PurposeAskSwitch_Toggled(object sender, RoutedEventArgs e)
     {
         if (_loading) return;
         App.Current.Database.SetSetting("purpose_ask_enabled", PurposeAskSwitch.IsOn ? "true" : "false");
-        App.Current.Watcher.ReloadSettings();
+        App.SignalSettingsChanged();
     }
 
     private void BrowserTabSwitch_Toggled(object sender, RoutedEventArgs e)
     {
         if (_loading) return;
         App.Current.Database.SetSetting("browser_tab_enabled", BrowserTabSwitch.IsOn ? "true" : "false");
-        App.Current.Watcher.ReloadSettings();
+        App.SignalSettingsChanged();
     }
 
     private void HistoryBackfillSwitch_Toggled(object sender, RoutedEventArgs e)
@@ -115,7 +115,7 @@ public partial class SettingsPage : Page
     {
         if (_loading || IdleBox.SelectedItem is not ComboBoxItem item) return;
         App.Current.Database.SetSetting("idle_limit", (string)item.Tag);
-        App.Current.Watcher.ReloadSettings();
+        App.SignalSettingsChanged();
     }
 
     private void RetentionBox_SelectionChanged(object sender, SelectionChangedEventArgs e)

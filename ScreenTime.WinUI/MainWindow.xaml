@@ -4,7 +4,7 @@
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     Title="ScreenTime">
 
-    <!-- 托盘图标已移至独立的 TrayService（代码创建），静默启动时无需创建主窗口 -->
+    <!-- 托盘图标由采集器进程（ScreenTime.Agent）承载；本窗口关闭即退出进程 -->
     <Grid>
         <Grid.RowDefinitions>
             <RowDefinition Height="40" />

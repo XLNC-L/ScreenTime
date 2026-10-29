@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.IO;
 
 namespace ScreenTime.Services;
 
@@ -68,14 +69,18 @@ public static class AutoStartService
     /// <paramref name="runAsAdmin"/> 默认 false：实测普通权限下同样能读到提升权限应用的
     /// 进程名、exe 路径和窗口标题（GetWindowText 跨完整性可读），
     /// 而 /RL HIGHEST 会让创建任务必须提权、每次登录都以管理员身份运行，代价大于收益。
+    ///
+    /// 注意：自启目标从 UI 进程改为采集器进程（ScreenTime.Agent.exe，无参数）。
+    /// 采集/托盘由 Agent 常驻承担；Agent 启动时也会自查任务指向自己，双向兜底。
     /// </summary>
     public static bool Enable(bool runAsAdmin = false)
     {
-        var exe = Environment.ProcessPath;
-        if (string.IsNullOrEmpty(exe)) return false;
+        var dir = Path.GetDirectoryName(Environment.ProcessPath);
+        var exe = dir is null ? null : Path.Combine(dir, "ScreenTime.Agent.exe");
+        if (string.IsNullOrEmpty(exe) || !File.Exists(exe)) return false;
 
         var level = runAsAdmin ? " /RL HIGHEST" : "";
-        var args = $"/Create /TN \"{TaskName}\" /SC ONLOGON{level} /F /TR \"\\\"{exe}\\\" --silent\"";
+        var args = $"/Create /TN \"{TaskName}\" /SC ONLOGON{level} /F /TR \"\\\"{exe}\\\"\"";
 
         // 先静默尝试（普通权限任务通常无需提权）；权限不足时提升权限再试一次。
         return RunSchtasks(args, elevate: false) || RunSchtasks(args, elevate: true);
