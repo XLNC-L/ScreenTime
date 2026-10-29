@@ -19,6 +19,10 @@ public struct Msg
 /// 纯 Win32 托盘图标（Shell_NotifyIcon + 消息窗口回调 + 原生右键菜单）。
 /// 采集器进程没有 WinUI/XAML 环境，不能使用 H.NotifyIcon.WinUI，
 /// 这里用经典模式（不设 NOTIFYICON_VERSION），回调消息直接收 WM_LBUTTONUP / WM_RBUTTONUP。
+///
+/// 回调**必须在 WndProc 里处理**：shell 用 PostMessage 时消息会经过队列，
+/// 用 SendMessage 时则直接进 WndProc、根本不入队。
+/// 早期版本在消息泵里拦截，一旦 shell 走 SendMessage 点击就完全没反应。
 /// </summary>
 public sealed class TrayIcon : IDisposable
 {
@@ -29,16 +33,24 @@ public sealed class TrayIcon : IDisposable
     private const uint NIF_TIP = 0x4;
     private const uint IMAGE_ICON = 1;
     private const uint LR_LOADFROMFILE = 0x0010;
+    private const uint WM_DESTROY = 0x0002;
+    private const uint WM_CONTEXTMENU = 0x007B;
+    private const uint WM_LBUTTONDOWN = 0x0201;
     private const uint WM_LBUTTONUP = 0x0202;
+    private const uint WM_LBUTTONDBLCLK = 0x0203;
+    private const uint WM_RBUTTONDOWN = 0x0204;
     private const uint WM_RBUTTONUP = 0x0205;
+    private const uint WM_RBUTTONDBLCLK = 0x0206;
+    /// <summary>NOTIFYICON_VERSION_4 下左键回调是 NIN_SELECT（WM_USER + 0）。</summary>
+    private const uint NIN_SELECT = 0x0400;
     private const uint TPM_RIGHTBUTTON = 0x0002;
     private const uint TPM_RETURNCMD = 0x0100;
     private const uint MF_STRING = 0x0000;
     private const uint MF_SEPARATOR = 0x0800;
-    private const int WM_DESTROY = 0x0002;
 
     private static readonly string WindowClassName = "ScreenTimeAgentTrayWnd_" + Guid.NewGuid().ToString("N");
     private static WndProcDelegate? _wndProcHolder; // 防 GC 回收
+    private static TrayIcon? _current;              // WndProc 是静态的，靠它回调实例
 
     private readonly IntPtr _hWnd;
     private readonly IntPtr _hMenu;
@@ -48,17 +60,28 @@ public sealed class TrayIcon : IDisposable
     public event Action? OpenRequested;
     public event Action? ExitRequested;
 
-    /// <summary>回调消息号（消息泵据此识别托盘事件）。</summary>
+    /// <summary>诊断日志（由 Program 接到 agent.log）。</summary>
+    public Action<string>? Log { get; set; }
+
+    /// <summary>回调消息号。</summary>
     public uint CallbackMessageId => _callbackMsg;
 
     private delegate IntPtr WndProcDelegate(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam);
 
-    public TrayIcon(string tooltip, string iconPath)
+    public TrayIcon(string tooltip, string iconPath, Action<string>? log = null)
     {
+        Log = log;
         _callbackMsg = 0x8000 + 0x1; // WM_APP + 1
+        _current = this;             // WndProc 是静态的，需要实例才能回调
         _hWnd = CreateMessageWindow();
         _hIcon = LoadIconFromFile(iconPath);
         _hMenu = BuildMenu();
+
+        if (_hWnd == IntPtr.Zero)
+        {
+            Log?.Invoke("tray: 消息窗口创建失败，托盘不可用");
+            return;
+        }
 
         var data = new NOTIFYICONDATA
         {
@@ -70,7 +93,26 @@ public sealed class TrayIcon : IDisposable
             hIcon = _hIcon,
             szTip = tooltip
         };
-        Shell_NotifyIcon(NIM_ADD, ref data);
+        var ok = Shell_NotifyIcon(NIM_ADD, ref data);
+        Log?.Invoke($"tray: NIM_ADD ok={ok} hwnd=0x{_hWnd.ToInt64():X} icon=0x{_hIcon.ToInt64():X} cbSize={data.cbSize}");
+        if (!ok)
+        {
+            // 常见原因：资源管理器未就绪。重试一次，多数情况能成功。
+            ok = Shell_NotifyIcon(NIM_ADD, ref data);
+            Log?.Invoke($"tray: NIM_ADD retry ok={ok}");
+        }
+
+        // 记录图标在屏幕上的实际位置：便于排查「图标在哪 / 是否进了溢出区」
+        var id = new NOTIFYICONIDENTIFIER
+        {
+            cbSize = (uint)Marshal.SizeOf<NOTIFYICONIDENTIFIER>(),
+            hWnd = _hWnd,
+            uID = 1
+        };
+        var hr = Shell_NotifyIconGetRect(ref id, out var rect);
+        Log?.Invoke(hr == 0
+            ? $"tray: rect=({rect.Left},{rect.Top},{rect.Right},{rect.Bottom})"
+            : $"tray: GetRect failed hr=0x{hr:X8}（图标可能被收进溢出区）");
     }
 
     private IntPtr CreateMessageWindow()
@@ -83,9 +125,17 @@ public sealed class TrayIcon : IDisposable
             hInstance = hInstance,
             lpszClassName = WindowClassName
         };
-        RegisterClassExW(ref wc);
-        return CreateWindowExW(0, WindowClassName, "ScreenTime Agent", 0,
+        var atom = RegisterClassExW(ref wc);
+        if (atom == 0)
+        {
+            Log?.Invoke($"tray: RegisterClassEx 失败 err={Marshal.GetLastWin32Error()}");
+            return IntPtr.Zero;
+        }
+        var hwnd = CreateWindowExW(0, WindowClassName, "ScreenTime Agent", 0,
             0, 0, 0, 0, IntPtr.Zero, IntPtr.Zero, hInstance, IntPtr.Zero);
+        if (hwnd == IntPtr.Zero)
+            Log?.Invoke($"tray: CreateWindowEx 失败 err={Marshal.GetLastWin32Error()}");
+        return hwnd;
     }
 
     private IntPtr LoadIconFromFile(string iconPath)
@@ -109,29 +159,72 @@ public sealed class TrayIcon : IDisposable
         return menu;
     }
 
-    /// <summary>由消息泵在收到 <see cref="CallbackMessageId"/> 时调用。</summary>
+    /// <summary>
+    /// 消息泵的兜底入口：正常路径是 WndProc 直接处理，
+    /// 这里保留是为了兼容个别把回调投递到队列的实现。
+    /// </summary>
     public void HandleMessage(Msg msg)
     {
         if (msg.message != _callbackMsg) return;
-        switch ((uint)msg.lParam)
+        HandleMouseMessage((uint)msg.lParam);
+    }
+
+    private void HandleMouseMessage(uint mouseMsg)
+    {
+        Log?.Invoke($"tray: callback 0x{mouseMsg:X}");
+        switch (mouseMsg)
         {
             case WM_LBUTTONUP:
+            case WM_LBUTTONDBLCLK:
+            case NIN_SELECT:
                 OpenRequested?.Invoke();
                 break;
             case WM_RBUTTONUP:
-                GetCursorPos(out var pt);
-                SetForegroundWindow(_hWnd);
-                var cmd = TrackPopupMenu(_hMenu, TPM_RIGHTBUTTON | TPM_RETURNCMD,
-                    pt.X, pt.Y, 0, _hWnd, IntPtr.Zero);
-                if (cmd == 1) OpenRequested?.Invoke();
-                else if (cmd == 2) ExitRequested?.Invoke();
+            case WM_CONTEXTMENU:
+                ShowContextMenu();
                 break;
         }
     }
 
+    /// <summary>
+    /// 诊断用：给自己的消息窗口投递一次「左键点击」回调，
+    /// 用来区分「消息没送到」和「收到了但没处理」。仅 --tray-selftest 时调用。
+    /// </summary>
+    public void SimulateClick()
+    {
+        Log?.Invoke($"tray: selftest post callback to 0x{_hWnd.ToInt64():X}");
+        PostMessageW(_hWnd, _callbackMsg, (IntPtr)1, (IntPtr)WM_LBUTTONUP);
+    }
+
+    private void ShowContextMenu()
+    {
+        GetCursorPos(out var pt);
+        // 弹菜单前必须把消息窗口设成前台，否则点击菜单外部不会自动收起
+        SetForegroundWindow(_hWnd);
+        var cmd = TrackPopupMenu(_hMenu, TPM_RIGHTBUTTON | TPM_RETURNCMD,
+            pt.X, pt.Y, 0, _hWnd, IntPtr.Zero);
+        // 官方要求：菜单结束后投递 WM_NULL，避免菜单残留
+        PostMessageW(_hWnd, 0x0000, IntPtr.Zero, IntPtr.Zero);
+        Log?.Invoke($"tray: menu cmd={cmd}");
+        if (cmd == 1) OpenRequested?.Invoke();
+        else if (cmd == 2) ExitRequested?.Invoke();
+    }
+
     private static IntPtr WndProc(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam)
     {
-        if (msg == WM_DESTROY) PostQuitMessage(0);
+        if (msg == WM_DESTROY)
+        {
+            PostQuitMessage(0);
+            return IntPtr.Zero;
+        }
+
+        // 托盘回调：不管 shell 是 Post 还是 Send，都会走到这里
+        if (_current is { } tray && msg == tray._callbackMsg)
+        {
+            tray.HandleMouseMessage((uint)lParam);
+            return IntPtr.Zero;
+        }
+
         return DefWindowProcW(hWnd, msg, wParam, lParam);
     }
 
@@ -145,12 +238,13 @@ public sealed class TrayIcon : IDisposable
                 hWnd = _hWnd,
                 uID = 1
             };
-            Shell_NotifyIcon(NIM_DELETE, ref data);
+            if (_hWnd != IntPtr.Zero) Shell_NotifyIcon(NIM_DELETE, ref data);
             if (_hIcon != IntPtr.Zero) DestroyIcon(_hIcon);
             if (_hMenu != IntPtr.Zero) DestroyMenu(_hMenu);
             if (_hWnd != IntPtr.Zero) DestroyWindow(_hWnd);
         }
         catch { }
+        if (ReferenceEquals(_current, this)) _current = null;
     }
 
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
@@ -190,8 +284,29 @@ public sealed class TrayIcon : IDisposable
         public int Y;
     }
 
+    [StructLayout(LayoutKind.Sequential)]
+    private struct NOTIFYICONIDENTIFIER
+    {
+        public uint cbSize;
+        public IntPtr hWnd;
+        public uint uID;
+        public Guid guidItem;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct RECT
+    {
+        public int Left;
+        public int Top;
+        public int Right;
+        public int Bottom;
+    }
+
     [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
     private static extern bool Shell_NotifyIcon(uint dwMessage, ref NOTIFYICONDATA lpdata);
+
+    [DllImport("shell32.dll")]
+    private static extern int Shell_NotifyIconGetRect(ref NOTIFYICONIDENTIFIER identifier, out RECT iconLocation);
 
     [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     private static extern ushort RegisterClassExW(ref WNDCLASSEX lpwcx);
@@ -216,6 +331,9 @@ public sealed class TrayIcon : IDisposable
 
     [DllImport("user32.dll")]
     private static extern bool SetForegroundWindow(IntPtr hWnd);
+
+    [DllImport("user32.dll")]
+    private static extern bool PostMessageW(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam);
 
     [DllImport("user32.dll")]
     private static extern IntPtr CreatePopupMenu();

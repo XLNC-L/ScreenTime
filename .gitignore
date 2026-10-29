@@ -36,3 +36,6 @@ screentime.location
 # 系统
 Thumbs.db
 desktop.ini
+
+# 本地 QA 工作区（含本地报告与截图，不入库）
+qa/

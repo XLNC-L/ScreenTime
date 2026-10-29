@@ -73,11 +73,22 @@ internal static class Program
 
         // 托盘 + 消息泵：ForegroundWatcher 的 WinEvent 回调也依赖消息循环
         var iconPath = Path.Combine(AppContext.BaseDirectory, "Assets", "app.ico");
-        _tray = new TrayIcon("ScreenTime", File.Exists(iconPath) ? iconPath : "");
+        _tray = new TrayIcon("ScreenTime", File.Exists(iconPath) ? iconPath : "", WriteLog);
         _tray.OpenRequested += OpenMainWindow;
         _tray.ExitRequested += ExitAgent;
 
         WriteLog($"agent started pid={Environment.ProcessId}");
+
+        // 诊断：--tray-selftest 时 5 秒后自投递一次左键回调，用于排查托盘点击链路
+        if (args.Any(a => a.Equals("--tray-selftest", StringComparison.OrdinalIgnoreCase)))
+        {
+            _ = Task.Run(async () =>
+            {
+                await Task.Delay(5000);
+                try { _tray?.SimulateClick(); } catch (Exception ex) { WriteError(ex); }
+            });
+        }
+
         RunMessageLoop();
         try { settingsTimer.Dispose(); } catch { }
         try { _watcher.Dispose(); } catch { }
@@ -102,24 +113,22 @@ internal static class Program
         catch { }
     }
 
-    /// <summary>消息泵：分发托盘回调与 WinEvent 消息；无消息时休眠，不空转。</summary>
+    /// <summary>
+    /// 消息泵：所有消息统一派发，托盘回调由 WndProc 处理。
+    /// 不在泵里拦截托盘消息——shell 用 SendMessage 投递时消息不入队，
+    /// 拦截式写法会完全收不到点击。
+    /// </summary>
     private static void RunMessageLoop()
     {
         const uint PM_REMOVE = 0x0001;
+        const uint WM_QUIT = 0x0012;
         while (!_exit)
         {
             while (PeekMessageW(out var msg, IntPtr.Zero, 0, 0, PM_REMOVE))
             {
-                if (msg.message == 0x0012) { _exit = true; break; } // WM_QUIT
-                if (_tray != null && msg.message == _tray.CallbackMessageId)
-                {
-                    _tray.HandleMessage(msg);
-                }
-                else
-                {
-                    TranslateMessage(ref msg);
-                    DispatchMessageW(ref msg);
-                }
+                if (msg.message == WM_QUIT) { _exit = true; break; }
+                TranslateMessage(ref msg);
+                DispatchMessageW(ref msg);
             }
             Thread.Sleep(50);
         }

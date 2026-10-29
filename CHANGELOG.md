@@ -27,6 +27,18 @@
 - **发布参数**：WinUI 与 Agent 均启用 PublishReadyToRun（发布时预热启动路径）。
 - 验证：构建 0 警告 0 错误；129 单测全过；全链路冒烟（seed 演示库 → Agent 常驻 16MB → UI 显示 122MB → 关闭窗口 UI 进程退出 → Agent 继续常驻并写库）。
 
+### 热修复（同日，仍为 v1.2.0，未改版本号）
+
+- **托盘左键点击无反应**。根因：托盘回调（`WM_APP+1`）是在消息泵里拦截的，`WndProc` 只调 `DefWindowProc`。
+  但 shell 投递回调走的是窗口过程，消息泵那条分支根本收不到，点击被静默丢弃。
+- 修法：回调改在 `WndProc` 处理（`SendMessage` / `PostMessage` 两条路都能收到），消息泵恢复标准派发；
+  顺带补 `WM_LBUTTONDBLCLK`、`NIN_SELECT` / `WM_CONTEXTMENU`（NOTIFYICON_VERSION_4 兼容）、
+  菜单结束后 `WM_NULL`，并在 `Disable` 时先 `NIM_DELETE`。
+- 新增诊断：`tray: NIM_ADD ok=…` / `tray: rect=…`（`Shell_NotifyIconGetRect`）/ `tray: callback 0x…`，
+  以及 `--tray-selftest`（自投递一次左键回调，用于区分「消息没送到」和「收到了没处理」）。
+- 验证：真实左键点击 → `tray: callback 0x202` → UI 进程拉起，实测通过。
+- `build.cmd` 同步修正：原来只发布 UI，Agent 不会被发出去（照旧脚本打的包托盘功能会缺文件）。
+
 ## v1.1.2（2026-10-29）启动提速 + 常驻内存平稳 + 报表后台化
 
 - **启动提速**：`Database.Migrate()`（重分类/去重/补列，大库可能耗时数百毫秒到数秒）从启动同步路径移到后台线程；`Watcher.Start()` 的 7 天碎片清理 + 标题清洗同样移后台。冷启动窗口不再等数据迁移完成。新库建表已补齐全部列，旧库仍由 Migrate 幂等升级，采集心跳（5 秒后首次写库）与迁移有充分缓冲。
