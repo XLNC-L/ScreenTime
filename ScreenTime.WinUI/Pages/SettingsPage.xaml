@@ -151,7 +151,7 @@
                     BorderThickness="1"
                     CornerRadius="8">
                     <StackPanel Spacing="4">
-                        <TextBlock Style="{StaticResource BodyStrongTextBlockStyle}" Text="ScreenTime 1.0.0" />
+                        <TextBlock Style="{StaticResource BodyStrongTextBlockStyle}" Text="ScreenTime 1.2.1" />
                         <TextBlock Foreground="{ThemeResource TextFillColorSecondaryBrush}" Text="轻量电脑使用时长统计 · 仅本地记录，不联网、不打扰" />
                     </StackPanel>
                 </Border>

@@ -7,24 +7,34 @@ using ScreenTime.Services;
 namespace ScreenTime.Pages;
 
 /// <summary>
-/// 网页页：跨 Chrome/Edge 汇总各页面时长。
-/// 三层结构：分组头为域名（host），行内为具体页面（host/path），
-/// 行首用小号浏览器图标标明来源，不再用文字写「谷歌浏览器 · …」。
-/// 没有地址的片段按标题归入「未识别页面」，不按域名压平，也不重复成两条。
+/// 网页页：跨 Chrome/Edge 展示网页前台片段的时间线。
+/// 顶部可按来源浏览器、时间范围与关键字（标题 / 域名 / 地址）筛选；
+/// 筛选全在本地内存完成，不重新查库。
 /// </summary>
 public partial class WebPage : Page
 {
-    private sealed record PageRow(string Title, string Sub, string Duration, string Url, ImageSource? Icon);
-
-    private sealed record PageGroup(string Host, double Seconds, string Duration, List<PageRow> Pages);
+    private sealed record TimelineItem(
+        string DateLabel, string TimeLabel, string Title, string Sub,
+        string Duration, Brush DotBrush);
 
     /// <summary>浏览器筛选项：Process 为空表示「全部」。</summary>
     private sealed record BrowserOption(string Process, string Display);
 
-    private const string UnknownGroup = "未识别页面";
     private const string AllBrowsers = "";
 
     private bool _loading = true;
+
+    /// <summary>已加载的时间线原始数据，搜索与浏览器筛选都在它上面做本地过滤。</summary>
+    private List<WebTimelineRow> _timelineRows = new();
+
+    private Dictionary<string, string> _nameByProcess = new(StringComparer.OrdinalIgnoreCase);
+    private int _days = 30;
+
+    /// <summary>搜索关键字：从 TextChanged 的 sender 取，避免 AutoSuggestBox.Text 的更新时序问题。</summary>
+    private string _searchKeyword = "";
+
+    /// <summary>搜索防抖：逐字符重建 200 项列表会卡。</summary>
+    private readonly DispatcherTimer _searchDebounce = new() { Interval = TimeSpan.FromMilliseconds(200) };
 
     public WebPage()
     {
@@ -36,26 +46,70 @@ public partial class WebPage : Page
             _loading = false;
             LoadPages();
         };
+        _searchDebounce.Tick += (_, _) =>
+        {
+            _searchDebounce.Stop();
+            ApplyTimelineFilter();
+        };
+        // 页面切走后让在途查询结果作废
+        Unloaded += (_, _) =>
+        {
+            _searchDebounce.Stop();
+            _version++;
+        };
     }
 
     private void RangeBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
         if (_loading || !IsLoaded) return;
+        // 换时间范围需要重新查库
         LoadPages();
     }
 
     private void BrowserBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
         if (_loading || !IsLoaded) return;
-        LoadPages();
+        // 换浏览器只影响过滤，数据已经加载好了
+        ApplyTimelineFilter();
     }
 
     /// <summary>加载入口：失败时在页面内提示并可重试，而不是靠全局 handler 留白。</summary>
-    private void LoadPages()
+    private void LoadPages() => _ = LoadPagesAsync();
+
+    private readonly SemaphoreSlim _gate = new(1, 1);
+    private int _version;
+    private bool _pending;
+
+    /// <summary>
+    /// 两个跨表查询放后台线程；聚合与绑定留在 UI（纯内存操作，毫秒级）。
+    /// 网页片段量大时（30 天可能上万条），同步查询会把切页卡住。
+    /// </summary>
+    private async System.Threading.Tasks.Task LoadPagesAsync()
     {
+        if (!await _gate.WaitAsync(0))
+        {
+            _pending = true;
+            return;
+        }
+
+        var version = ++_version;
         try
         {
-            LoadPagesCore();
+            var days = 30;
+            if (RangeBox.SelectedItem is ComboBoxItem item && item.Tag is string tag &&
+                int.TryParse(tag, out var n))
+                days = n;
+
+            var db = App.Current.Database;
+            var to = DateTime.UtcNow;
+            var from = to.AddDays(-days);
+
+            var (rows, timelineRows) = await System.Threading.Tasks.Task.Run(
+                () => (db.QueryWebPages(from, to), db.QueryWebTimeline(from, to)));
+
+            if (version != _version || !IsLoaded) return;
+
+            LoadPagesCore(rows, timelineRows, days);
             ErrorBar.IsOpen = false;
         }
         catch (Exception ex)
@@ -63,146 +117,129 @@ public partial class WebPage : Page
             ErrorBar.Message = ex.Message;
             ErrorBar.IsOpen = true;
         }
+        finally
+        {
+            _gate.Release();
+            if (_pending)
+            {
+                _pending = false;
+                _ = LoadPagesAsync();
+            }
+        }
     }
 
     private void RetryBtn_Click(object sender, RoutedEventArgs e) => LoadPages();
 
-    private void LoadPagesCore()
+    private void LoadPagesCore(List<WebPageRow> rows, List<WebTimelineRow> timelineRows, int days)
     {
-        var days = 30;
-        if (RangeBox.SelectedItem is ComboBoxItem item && item.Tag is string tag &&
-            int.TryParse(tag, out var n))
-            days = n;
+        _days = days;
+        _timelineRows = timelineRows;
 
-        var db = App.Current.Database;
-        var to = DateTime.UtcNow;
-        var rows = db.QueryWebPages(to.AddDays(-days), to);
+        _nameByProcess = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var app in App.Current.Database.GetAllApps())
+            _nameByProcess.TryAdd(app.ProcessName, app.Name);
 
-        // exe 路径取自 apps 表：浏览器没在运行时也能拿到图标
-        var exeByProcess = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        var nameByProcess = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var app in db.GetAllApps())
-        {
-            if (!string.IsNullOrEmpty(app.ExePath)) exeByProcess.TryAdd(app.ProcessName, app.ExePath);
-            nameByProcess.TryAdd(app.ProcessName, app.Name);
-        }
+        RefreshBrowserFilter(rows, _nameByProcess);
+        ApplyTimelineFilter();
+    }
 
-        RefreshBrowserFilter(rows, nameByProcess);
-
+    /// <summary>浏览器筛选或搜索词变化时重新过滤时间线（本地过滤，不重新查库）。</summary>
+    private void ApplyTimelineFilter()
+    {
         var filter = (BrowserBox.SelectedItem as BrowserOption)?.Process ?? AllBrowsers;
-        var filtered = filter.Length == 0
-            ? rows
-            : rows.Where(r => string.Equals(r.ProcessName, filter, StringComparison.OrdinalIgnoreCase)).ToList();
+        var shown = FilterTimeline(filter);
+        LoadTimeline(shown);
+        UpdateSummary(shown, filter);
+    }
 
-        // 页面级聚合：key 带上浏览器，同一网址在 Chrome 和 Edge 各算一行，图标才不会含糊
-        var pages = new Dictionary<(string Host, string Process, string Key),
-            (double Seconds, double TitleSeconds, string Title, string Sub, string Url)>();
+    private List<WebTimelineRow> FilterTimeline(string processFilter)
+    {
+        IEnumerable<WebTimelineRow> rows = _timelineRows;
 
-        // 标题 → 已知页面：把「同站无地址」的片段并回同一行，避免同一页面拆成两条。
-        // 按浏览器分别建映射，否则 Chrome 的标题会把 Edge 的片段也吸过去。
-        var titleSite = new Dictionary<(string Process, string Key), string>();
-        var titleSiteTime = new Dictionary<(string Process, string Key, string Site), double>();
+        if (processFilter.Length > 0)
+            rows = rows.Where(r => string.Equals(r.ProcessName, processFilter, StringComparison.OrdinalIgnoreCase));
 
-        foreach (var r in filtered)
+        var keyword = _searchKeyword.Trim();
+        if (keyword.Length > 0)
+            rows = rows.Where(r => ContainsText(r.Title, keyword) ||
+                                   ContainsText(r.Site, keyword) ||
+                                   ContainsText(r.Url, keyword));
+
+        return rows.ToList();
+    }
+
+    private static bool ContainsText(string? text, string keyword) =>
+        !string.IsNullOrEmpty(text) && text.Contains(keyword, StringComparison.OrdinalIgnoreCase);
+
+    private void UpdateSummary(List<WebTimelineRow> shown, string filter)
+    {
+        if (shown.Count == 0)
         {
-            if (string.IsNullOrEmpty(r.Site)) continue;
-
-            var title = BrowserTabService.CleanTitle(r.Title);
-            var host = HostOf(r.Site);
-            var display = !string.IsNullOrEmpty(title) ? title : r.Site;
-
-            var k = (host, r.ProcessName, r.Site);
-            pages.TryGetValue(k, out var g);
-            g.Seconds += r.Seconds;
-            // 同一地址下可能有多个标题：取占用时长最长的那个，避免被一闪而过的标题顶替
-            if (!string.IsNullOrEmpty(display) && r.Seconds > g.TitleSeconds)
-            {
-                g.Title = display;
-                g.TitleSeconds = r.Seconds;
-            }
-            // 浏览器已由行首图标表示，副标题只留页面地址
-            if (string.IsNullOrEmpty(g.Sub)) g.Sub = r.Site;
-            if (!string.IsNullOrEmpty(r.Url)) g.Url = r.Url;
-            pages[k] = g;
-
-            var key = NormalizeTitle(title);
-            if (key.Length >= 4)
-            {
-                var tk = (r.ProcessName, key, r.Site);
-                titleSiteTime.TryGetValue(tk, out var t);
-                titleSiteTime[tk] = t + r.Seconds;
-            }
+            SummaryText.Text = "";
+            return;
         }
 
-        // 同一标题对应多个页面时，取时长最长的那个
-        foreach (var ((process, key, site), seconds) in titleSiteTime)
-        {
-            if (!titleSite.TryGetValue((process, key), out var existing) ||
-                titleSiteTime[(process, key, existing)] < seconds)
-                titleSite[(process, key)] = site;
-        }
-
-        foreach (var r in filtered)
-        {
-            if (!string.IsNullOrEmpty(r.Site)) continue;
-
-            var title = BrowserTabService.CleanTitle(r.Title);
-            if (string.IsNullOrEmpty(title)) continue;
-            var key = NormalizeTitle(title);
-
-            // 标题能对上已知页面：并回该页面，不另立「未识别」条目
-            if (key.Length >= 4 && titleSite.TryGetValue((r.ProcessName, key), out var knownSite))
-            {
-                var k2 = (HostOf(knownSite), r.ProcessName, knownSite);
-                pages.TryGetValue(k2, out var g2);
-                g2.Seconds += r.Seconds;
-                if (string.IsNullOrEmpty(g2.Title)) g2.Title = title;
-                pages[k2] = g2;
-                continue;
-            }
-
-            var ku = (UnknownGroup, r.ProcessName, key);
-            pages.TryGetValue(ku, out var gu);
-            gu.Seconds += r.Seconds;
-            if (string.IsNullOrEmpty(gu.Title)) gu.Title = title;
-            pages[ku] = gu;
-        }
-
-        var groups = pages
-            .GroupBy(kv => kv.Key.Host)
-            .Select(g =>
-            {
-                var seconds = g.Sum(x => x.Value.Seconds);
-                return new PageGroup(
-                    g.Key,
-                    seconds,
-                    StatsService.FormatDuration(seconds),
-                    g.OrderByDescending(x => x.Value.Seconds)
-                        .Select(x => new PageRow(
-                            x.Value.Title,
-                            x.Value.Sub,
-                            StatsService.FormatDuration(x.Value.Seconds),
-                            x.Value.Url,
-                            AppIconService.GetIcon(
-                                exeByProcess.GetValueOrDefault(x.Key.Process) ?? "",
-                                x.Key.Process)))
-                        .ToList());
-            })
-            // 「未识别页面」是兜底分组，固定放在最后
-            .OrderBy(g => g.Host == UnknownGroup ? 1 : 0)
-            .ThenByDescending(g => g.Seconds)
-            .ToList();
-
-        GroupList.ItemsSource = groups;
-        EmptyText.Visibility = groups.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
-
-        var total = pages.Sum(p => p.Value.Seconds);
+        var total = shown.Sum(r => (r.EndUtc - r.StartUtc).TotalSeconds);
         var scope = filter.Length == 0
             ? ""
-            : $"{nameByProcess.GetValueOrDefault(filter) ?? filter} · ";
-        SummaryText.Text = groups.Count == 0
-            ? ""
-            : $"{scope}近 {days} 天共 {pages.Count} 个页面，网页时长 {StatsService.FormatDuration(total)}";
+            : $"{_nameByProcess.GetValueOrDefault(filter) ?? filter} · ";
+        SummaryText.Text =
+            $"{scope}近 {_days} 天共 {shown.Count} 条网页记录，网页时长 {StatsService.FormatDuration(total)}";
+    }
+
+    /// <summary>绘制网页访问时间线，最多展示最近 200 条片段。</summary>
+    private void LoadTimeline(IReadOnlyList<WebTimelineRow> rows)
+    {
+        // 强调色只解析一次：原来每行都去 Resources 里查，且 SystemAccentColor 是 Color 不是 Brush，
+        // `as Brush` 恒为 null，导致圆点永远是写死的蓝色。
+        var dotBrush = ResolveAccentBrush();
+
+        var items = rows
+            .OrderByDescending(r => r.StartUtc)
+            .Take(200)
+            .Select(r =>
+            {
+                var start = r.StartUtc.ToLocalTime();
+                var title = BrowserTabService.CleanTitle(r.Title);
+                if (string.IsNullOrEmpty(title)) title = string.IsNullOrEmpty(r.Site) ? "未识别页面" : r.Site;
+                var sub = !string.IsNullOrEmpty(r.Site) ? r.Site : r.AppName;
+                return new TimelineItem(
+                    start.ToString("M月d日 ddd"),
+                    $"{start:HH:mm} · {r.AppName}",
+                    title,
+                    sub,
+                    StatsService.FormatDuration((r.EndUtc - r.StartUtc).TotalSeconds),
+                    dotBrush);
+            })
+            .ToList();
+
+        TimelineList.ItemsSource = items;
+        TimelineEmptyText.Visibility = items.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    private void TimelineSearchBox_TextChanged(AutoSuggestBox sender, AutoSuggestBoxTextChangedEventArgs args)
+    {
+        _searchKeyword = sender.Text ?? "";
+        // 输入防抖：逐字符重建 200 项列表会卡
+        _searchDebounce.Stop();
+        _searchDebounce.Start();
+    }
+
+    /// <summary>回车提交：立即过滤，不等防抖。</summary>
+    private void TimelineSearchBox_QuerySubmitted(AutoSuggestBox sender, AutoSuggestBoxQuerySubmittedEventArgs args)
+    {
+        _searchDebounce.Stop();
+        _searchKeyword = sender.Text ?? "";
+        ApplyTimelineFilter();
+    }
+
+    private static Brush ResolveAccentBrush()
+    {
+        var res = Application.Current.Resources;
+        if (res.TryGetValue("AccentFillColorDefaultBrush", out var b) && b is Brush brush) return brush;
+        if (res.TryGetValue("SystemAccentColor", out var c) && c is Windows.UI.Color color)
+            return new SolidColorBrush(color);
+        return new SolidColorBrush(Windows.UI.Color.FromArgb(255, 0, 120, 212));
     }
 
     /// <summary>按数据里真实出现过的浏览器重建筛选项，尽量保留用户已选的那个。</summary>
@@ -237,30 +274,4 @@ public partial class WebPage : Page
         _loading = false;
     }
 
-    /// <summary>site（host/path）→ host；不含点的内部页面归入「未识别页面」。</summary>
-    private static string HostOf(string site)
-    {
-        var slash = site.IndexOf('/');
-        var host = slash >= 0 ? site[..slash] : site;
-        return host.Contains('.') ? host : UnknownGroup;
-    }
-
-    private static string NormalizeTitle(string title) =>
-        string.Join(" ", title.Split(' ', StringSplitOptions.RemoveEmptyEntries)).ToLowerInvariant();
-
-    /// <summary>点击页面行：在默认浏览器打开原始地址。</summary>
-    private void PageRow_Tapped(object sender, Microsoft.UI.Xaml.Input.TappedRoutedEventArgs e)
-    {
-        if ((sender as FrameworkElement)?.DataContext is not PageRow row) return;
-        if (string.IsNullOrEmpty(row.Url)) return;
-        try
-        {
-            System.Diagnostics.Process.Start(
-                new System.Diagnostics.ProcessStartInfo(row.Url) { UseShellExecute = true });
-        }
-        catch
-        {
-            // 地址无法打开时忽略
-        }
-    }
 }

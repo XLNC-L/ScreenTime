@@ -14,19 +14,43 @@ public static class AutoStartService
 
     public static bool IsEnabled()
     {
+        // 优先看任务文件是否存在；读不到内容也不影响「有没有开」这个判断
+        if (IsTaskFilePresent()) return true;
+        return QueryTaskXmlViaSchtasks() != null;
+    }
+
+    /// <summary>
+    /// 一次查询同时拿到「任务是否存在」和「是否最高权限」。
+    /// 设置页每次加载都要读状态，两次 schtasks 调用会白等几百毫秒。
+    /// </summary>
+    public static (bool Enabled, bool RunAsAdmin) GetState()
+    {
+        var xml = ReadTaskFile() ?? QueryTaskXmlViaSchtasks();
+
+        // 任务文件内容读不到（权限/编码）时，至少用存在性判断：
+        // 否则会把「已经开着」显示成「关着」，用户以为开关坏了。
+        var exists = xml != null || IsTaskFilePresent();
+        if (!exists) return (false, false);
+
+        var admin = xml?.Contains("HighestAvailable", StringComparison.OrdinalIgnoreCase) ?? false;
+        return (true, admin);
+    }
+
+    /// <summary>当前任务是否以最高权限运行（读任务 XML 里的 RunLevel）。</summary>
+    public static bool IsRunAsAdmin()
+    {
+        var xml = ReadTaskFile() ?? QueryTaskXmlViaSchtasks();
+        return xml != null && xml.Contains("HighestAvailable", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string TaskFilePath() =>
+        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "Tasks", TaskName);
+
+    private static bool IsTaskFilePresent()
+    {
         try
         {
-            var psi = new ProcessStartInfo("schtasks", $"/Query /TN \"{TaskName}\"")
-            {
-                CreateNoWindow = true,
-                UseShellExecute = false,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true
-            };
-            using var p = Process.Start(psi);
-            if (p == null) return false;
-            if (!p.WaitForExit(5000)) return false;
-            return p.ExitCode == 0;
+            return File.Exists(TaskFilePath());
         }
         catch
         {
@@ -34,14 +58,24 @@ public static class AutoStartService
         }
     }
 
-    /// <summary>当前任务是否以最高权限运行（读任务 XML 里的 RunLevel）。</summary>
-    public static bool IsRunAsAdmin()
+    /// <summary>直接读计划任务定义文件（UTF-16 XML），不依赖 schtasks 输出。</summary>
+    private static string? ReadTaskFile()
     {
-        var xml = QueryTaskXml();
-        return xml != null && xml.Contains("HighestAvailable", StringComparison.OrdinalIgnoreCase);
+        try
+        {
+            var path = TaskFilePath();
+            if (!File.Exists(path)) return null;
+            return File.ReadAllText(path, System.Text.Encoding.Unicode);
+        }
+        catch
+        {
+            return null;
+        }
     }
 
-    private static string? QueryTaskXml()
+    private static string? QueryTaskXml() => ReadTaskFile() ?? QueryTaskXmlViaSchtasks();
+
+    private static string? QueryTaskXmlViaSchtasks()
     {
         try
         {
@@ -111,13 +145,43 @@ public static class AutoStartService
 
             using var p = Process.Start(psi);
             if (p == null) return false;
-            if (!p.WaitForExit(elevate ? 60000 : 15000)) return false;
-            return p.ExitCode == 0;
+
+            // 先读完输出再等退出，避免管道缓冲区满导致死锁
+            var stdout = elevate ? "" : p.StandardOutput.ReadToEnd();
+            var stderr = elevate ? "" : p.StandardError.ReadToEnd();
+            if (!p.WaitForExit(elevate ? 60000 : 15000))
+            {
+                Log($"schtasks timeout: {args}");
+                return false;
+            }
+            if (p.ExitCode != 0)
+            {
+                Log($"schtasks exit={p.ExitCode} args={args} stderr={stderr.Trim()} stdout={stdout.Trim()}");
+                return false;
+            }
+            return true;
+        }
+        catch (Exception ex)
+        {
+            // 用户取消 UAC 等情形
+            Log($"schtasks threw: {args} | {ex.GetType().Name}: {ex.Message}");
+            return false;
+        }
+    }
+
+    /// <summary>自启相关失败写日志，方便排查「开关点了没反应」。</summary>
+    private static void Log(string message)
+    {
+        try
+        {
+            var dir = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "ScreenTime");
+            Directory.CreateDirectory(dir);
+            File.AppendAllText(Path.Combine(dir, "autostart.log"),
+                $"{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff} {message}\n");
         }
         catch
         {
-            // 用户取消 UAC 等情形
-            return false;
         }
     }
 }

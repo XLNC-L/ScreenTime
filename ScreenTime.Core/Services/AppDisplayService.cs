@@ -10,6 +10,52 @@ namespace ScreenTime.Services;
 public static class AppDisplayService
 {
     /// <summary>
+    /// 后台/安装器噪声进程名（不含 .exe，大小写不敏感）。
+    /// <para>
+    /// 收件箱过滤、采集跳过、数据库自动忽略三处共用这一份名单——
+    /// 之前数据库那边单独写死了一小串，导致「收件箱里看不见、历史统计里还在计时」。
+    /// </para>
+    /// </summary>
+    public static readonly IReadOnlySet<string> NoiseProcessNames =
+        new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            // 任务计划 / 系统宿主
+            "schtasks", "taskeng", "taskhost", "taskhostw", "svchost", "dllhost", "credentialuibroker",
+            "backgroundtaskhost", "dasHost", "compattelrunner", "werfault", "wermgr",
+            // Hyper-V / WSL / 虚拟化
+            "vmwp", "vmcompute", "vmmem", "vmmemwsl",
+            // WiX / MSI / 安装器与卸载器
+            "wixstdb", "wixstdba", "msiexec", "setup", "install", "installer", "unins000",
+            // Windows 更新与维护
+            "tiworker", "trustedinstaller", "mousocoreworker", "usoclient", "wuauclt",
+            "cleanmgr", "dism", "servicingstack",
+            // 音频、字体、错误报告等后台组件
+            "audiodg", "fontdrvhost", "sppsvc", "spoolsv", "printfilterpipelinesvc",
+            // 安全组件与系统扫描器
+            "msmpeng", "nisrv", "securityhealthservice", "smartscreen",
+            // 自己的采集器进程：不是用户使用的应用，不该出现在排行里
+            "screentime.agent"
+        };
+
+    /// <summary>系统临时目录：这些路径下的 exe 是安装包解压出来的瞬时进程。</summary>
+    public static readonly string[] NoisePathFragments =
+    [
+        @"\AppData\Local\Temp\",
+        @"\Windows\Temp\"
+    ];
+
+    /// <summary>判断是否应从“未分类收件箱”中隐藏后台/安装器噪声。</summary>
+    public static bool IsInboxNoise(string processName, string exePath)
+    {
+        var name = StripExe((processName ?? "").Trim());
+        if (NoiseProcessNames.Contains(name)) return true;
+
+        var path = (exePath ?? "").Replace('/', '\\');
+        foreach (var fragment in NoisePathFragments)
+            if (path.Contains(fragment, StringComparison.OrdinalIgnoreCase)) return true;
+        return false;
+    }
+    /// <summary>
     /// 系统 UI 外壳进程名（不含扩展名，小写）。这些进程短暂获得前台是
     /// Windows 正常行为，不应作为"应用"统计。
     /// 注意：explorer（文件资源管理器）、SystemSettings（设置）等用户

@@ -80,6 +80,26 @@ var
   DeleteUserData: Boolean;
   DeleteDataCheckBox: TNewCheckBox;
 
+{ 结束正在运行的界面与采集器进程。
+  采集器是后台常驻、没有主窗口，Restart Manager 关不掉它，
+  不主动结束的话升级/卸载会因为 dll 被占用而失败。 }
+procedure StopScreenTimeProcesses();
+var
+  ResultCode: Integer;
+begin
+  Exec(ExpandConstant('{sys}\taskkill.exe'), '/f /im ScreenTime.Agent.exe',
+       '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  Exec(ExpandConstant('{sys}\taskkill.exe'), '/f /im ScreenTime.exe',
+       '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+end;
+
+{ 安装（含覆盖升级）前先停旧进程 }
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+begin
+  StopScreenTimeProcesses();
+  Result := '';
+end;
+
 { 检查是否装了 .NET 8 运行时（Microsoft.NETCore.App 8.x） }
 function HasDotNet8(): Boolean;
 var
@@ -146,7 +166,7 @@ begin
       '使用数据（数据库）默认保留在：' + #13#10 +
       DataDir + #13#10 +
       '重新安装后可继续查看历史记录。' + #13#10#13#10 +
-      '提示：卸载前请先在托盘图标上右键退出 ScreenTime，否则文件被占用会卸载失败。';
+      '正在运行的 ScreenTime 进程会被自动结束。';
 
     DeleteDataCheckBox := TNewCheckBox.Create(Form);
     DeleteDataCheckBox.Parent := Form;
@@ -191,6 +211,9 @@ end;
 
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 begin
+  if CurUninstallStep = usUninstall then
+    StopScreenTimeProcesses();
+
   if (CurUninstallStep = usPostUninstall) and DeleteUserData then
     DelTree(ExpandConstant('{userappdata}\ScreenTime'), True, True, True);
 end;

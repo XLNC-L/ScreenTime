@@ -18,37 +18,82 @@ public partial class SettingsPage : Page
         Loaded += OnLoaded;
     }
 
-    private void OnLoaded(object sender, RoutedEventArgs e)
+    /// <summary>
+    /// 数据库写操作放后台：UI 与 Agent 共享同一个库，在 UI 线程同步写时
+    /// 一旦撞上 Agent 的心跳写就会原地等锁（busy_timeout=3s），表现为「点了没反应」。
+    /// </summary>
+    private static async System.Threading.Tasks.Task RunDbAsync(Action action)
     {
-        _loading = true;
-        var db = App.Current.Database;
-
-        AutoStartSwitch.IsOn = AutoStartService.IsEnabled();
-        AdminSwitch.IsOn = AutoStartService.IsRunAsAdmin();
-        AdminSwitch.IsEnabled = AutoStartSwitch.IsOn;
-        AudioSwitch.IsOn = db.GetSetting("audio_enabled", "true") != "false";
-        PurposeAskSwitch.IsOn = db.GetSetting("purpose_ask_enabled", "false") == "true";
-        BrowserTabSwitch.IsOn = db.GetSetting("browser_tab_enabled", "true") != "false";
-        HistoryBackfillSwitch.IsOn = db.GetSetting("history_backfill_enabled", "true") != "false";
-
-        var idle = db.GetSetting("idle_limit", "180");
-        foreach (ComboBoxItem item in IdleBox.Items)
-            if ((string)item.Tag == idle) IdleBox.SelectedItem = item;
-
-        var retention = db.GetSetting("title_retention", "30");
-        foreach (ComboBoxItem item in RetentionBox.Items)
-            if ((string)item.Tag == retention) RetentionBox.SelectedItem = item;
-
-        DbPathText.Text = "数据库位置：" + db.DbPath;
-        _loading = false;
+        try { await System.Threading.Tasks.Task.Run(action); } catch { }
     }
 
-    private void AutoStartSwitch_Toggled(object sender, RoutedEventArgs e)
+    private async void OnLoaded(object sender, RoutedEventArgs e)
+    {
+        // _loading 必须用 try/finally 兜住：读设置撞上 Agent 的写锁会抛 SQLITE_BUSY，
+        // 一旦 _loading 卡在 true，页面上所有开关都会变成「点了没反应」。
+        _loading = true;
+        try
+        {
+            var db = App.Current.Database;
+
+            AudioSwitch.IsOn = db.GetSetting("audio_enabled", "true") != "false";
+            PurposeAskSwitch.IsOn = db.GetSetting("purpose_ask_enabled", "false") == "true";
+            BrowserTabSwitch.IsOn = db.GetSetting("browser_tab_enabled", "true") != "false";
+            HistoryBackfillSwitch.IsOn = db.GetSetting("history_backfill_enabled", "true") != "false";
+
+            var idle = db.GetSetting("idle_limit", "180");
+            foreach (ComboBoxItem item in IdleBox.Items)
+                if ((string)item.Tag == idle) IdleBox.SelectedItem = item;
+
+            var retention = db.GetSetting("title_retention", "30");
+            foreach (ComboBoxItem item in RetentionBox.Items)
+                if ((string)item.Tag == retention) RetentionBox.SelectedItem = item;
+
+            DbPathText.Text = "数据库位置：" + db.DbPath;
+        }
+        catch
+        {
+            // 读失败就用控件默认值，不阻塞页面
+        }
+        finally
+        {
+            _loading = false;
+        }
+
+        // 自启状态要读任务文件/schtasks（可能几百毫秒），放后台
+        try
+        {
+            var state = await System.Threading.Tasks.Task.Run(AutoStartService.GetState);
+            _loading = true;
+            AutoStartSwitch.IsOn = state.Enabled;
+            AdminSwitch.IsOn = state.RunAsAdmin;
+            AdminSwitch.IsEnabled = state.Enabled;
+        }
+        catch
+        {
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private async void AutoStartSwitch_Toggled(object sender, RoutedEventArgs e)
     {
         if (_loading) return;
         var enable = AutoStartSwitch.IsOn;
-        var ok = enable ? AutoStartService.Enable(AdminSwitch.IsOn) : AutoStartService.Disable();
-        if (!ok)
+        var runAsAdmin = AdminSwitch.IsOn;
+
+        var ok = await System.Threading.Tasks.Task.Run(() =>
+            enable ? AutoStartService.Enable(runAsAdmin) : AutoStartService.Disable());
+
+        if (ok)
+        {
+            // 让 Agent 知道这是用户的主动选择：关掉后不再自动把任务建回来。
+            await RunDbAsync(() =>
+                App.Current.Database.SetSetting("autostart_disabled", enable ? "0" : "1"));
+        }
+        else
         {
             ShowInfoBar("设置开机自启失败，请确认有权限创建任务计划。", InfoBarSeverity.Warning);
         }
@@ -56,72 +101,112 @@ public partial class SettingsPage : Page
     }
 
     /// <summary>切换「以最高权限运行」：删掉旧任务按新权限重建。</summary>
-    private void AdminSwitch_Toggled(object sender, RoutedEventArgs e)
+    private async void AdminSwitch_Toggled(object sender, RoutedEventArgs e)
     {
         if (_loading) return;
         if (!AutoStartSwitch.IsOn) return;
 
         var runAsAdmin = AdminSwitch.IsOn;
-        AutoStartService.Disable();
-        if (!AutoStartService.Enable(runAsAdmin))
+        var ok = await System.Threading.Tasks.Task.Run(() =>
+        {
+            AutoStartService.Disable();
+            return AutoStartService.Enable(runAsAdmin);
+        });
+
+        if (!ok)
         {
             ShowInfoBar(runAsAdmin
                 ? "以最高权限创建任务失败，可能需要在 UAC 提示里允许。已恢复为普通权限。"
                 : "重建任务失败，请确认有权限创建任务计划。", InfoBarSeverity.Warning);
         }
+        else
+        {
+            await RunDbAsync(() => App.Current.Database.SetSetting("autostart_disabled", "0"));
+        }
         RefreshAutoStartState();
     }
 
     /// <summary>把两个开关回读成任务的真实状态，避免界面和系统不一致。</summary>
-    private void RefreshAutoStartState()
+    private async void RefreshAutoStartState()
     {
-        _loading = true;
-        var enabled = AutoStartService.IsEnabled();
-        AutoStartSwitch.IsOn = enabled;
-        AdminSwitch.IsOn = enabled && AutoStartService.IsRunAsAdmin();
-        AdminSwitch.IsEnabled = enabled;
-        _loading = false;
+        try
+        {
+            var state = await System.Threading.Tasks.Task.Run(AutoStartService.GetState);
+            _loading = true;
+            AutoStartSwitch.IsOn = state.Enabled;
+            AdminSwitch.IsOn = state.RunAsAdmin;
+            AdminSwitch.IsEnabled = state.Enabled;
+        }
+        catch
+        {
+        }
+        finally
+        {
+            _loading = false;
+        }
     }
 
-    private void AudioSwitch_Toggled(object sender, RoutedEventArgs e)
-    {
-        if (_loading) return;
-        App.Current.Database.SetSetting("audio_enabled", AudioSwitch.IsOn ? "true" : "false");
-        App.SignalSettingsChanged();
-    }
-
-    private void PurposeAskSwitch_Toggled(object sender, RoutedEventArgs e)
-    {
-        if (_loading) return;
-        App.Current.Database.SetSetting("purpose_ask_enabled", PurposeAskSwitch.IsOn ? "true" : "false");
-        App.SignalSettingsChanged();
-    }
-
-    private void BrowserTabSwitch_Toggled(object sender, RoutedEventArgs e)
+    private async void AudioSwitch_Toggled(object sender, RoutedEventArgs e)
     {
         if (_loading) return;
-        App.Current.Database.SetSetting("browser_tab_enabled", BrowserTabSwitch.IsOn ? "true" : "false");
-        App.SignalSettingsChanged();
+        var value = AudioSwitch.IsOn ? "true" : "false";
+        await RunDbAsync(() =>
+        {
+            App.Current.Database.SetSetting("audio_enabled", value);
+            App.SignalSettingsChanged();
+        });
     }
 
-    private void HistoryBackfillSwitch_Toggled(object sender, RoutedEventArgs e)
+    private async void PurposeAskSwitch_Toggled(object sender, RoutedEventArgs e)
     {
         if (_loading) return;
-        App.Current.Database.SetSetting("history_backfill_enabled", HistoryBackfillSwitch.IsOn ? "true" : "false");
-        if (HistoryBackfillSwitch.IsOn) App.Current.HistoryImport.Start();
+        var value = PurposeAskSwitch.IsOn ? "true" : "false";
+        await RunDbAsync(() =>
+        {
+            App.Current.Database.SetSetting("purpose_ask_enabled", value);
+            App.SignalSettingsChanged();
+        });
     }
 
-    private void IdleBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    private async void BrowserTabSwitch_Toggled(object sender, RoutedEventArgs e)
+    {
+        if (_loading) return;
+        var value = BrowserTabSwitch.IsOn ? "true" : "false";
+        await RunDbAsync(() =>
+        {
+            App.Current.Database.SetSetting("browser_tab_enabled", value);
+            App.SignalSettingsChanged();
+        });
+    }
+
+    private async void HistoryBackfillSwitch_Toggled(object sender, RoutedEventArgs e)
+    {
+        if (_loading) return;
+        var value = HistoryBackfillSwitch.IsOn ? "true" : "false";
+        // 回填跑在 Agent 进程里：推一次版本号，让它 10 秒内重新读设置（开着就立刻跑一轮）
+        await RunDbAsync(() =>
+        {
+            App.Current.Database.SetSetting("history_backfill_enabled", value);
+            App.SignalSettingsChanged();
+        });
+    }
+
+    private async void IdleBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
         if (_loading || IdleBox.SelectedItem is not ComboBoxItem item) return;
-        App.Current.Database.SetSetting("idle_limit", (string)item.Tag);
-        App.SignalSettingsChanged();
+        var value = (string)item.Tag;
+        await RunDbAsync(() =>
+        {
+            App.Current.Database.SetSetting("idle_limit", value);
+            App.SignalSettingsChanged();
+        });
     }
 
-    private void RetentionBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    private async void RetentionBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
         if (_loading || RetentionBox.SelectedItem is not ComboBoxItem item) return;
-        App.Current.Database.SetSetting("title_retention", (string)item.Tag);
+        var value = (string)item.Tag;
+        await RunDbAsync(() => App.Current.Database.SetSetting("title_retention", value));
     }
 
     private async void ChangeLocationBtn_Click(object sender, RoutedEventArgs e)

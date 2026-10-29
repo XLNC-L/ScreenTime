@@ -21,7 +21,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <LangVersion>latest</LangVersion>
     <ApplicationIcon>Assets\app.ico</ApplicationIcon>
-    <Version>1.2.0</Version>
+    <Version>1.2.1</Version>
     <PublishReadyToRun>true</PublishReadyToRun>
     <PublishReadyToRunShowWarnings>true</PublishReadyToRunShowWarnings>
   </PropertyGroup>
@@ -53,6 +53,22 @@
     <Copy
         SourceFiles="$(NuGetPackageRoot)microsoft.win32.systemevents\9.0.1\runtimes\win\lib\net8.0\Microsoft.Win32.SystemEvents.dll"
         DestinationFolder="$(PublishDir)"
+        SkipUnchangedFiles="true" />
+  </Target>
+
+  <!--
+    WindowsPackageType=None（非 MSIX）下，WinUI 把 .xbf 归入 EmbedOutputGroupForPackaging，
+    `dotnet publish` 不会把它们复制到发布目录 —— 发布版会因为缺少 XAML 编译产物直接启动失败
+    （bin 目录里有、publish 目录里没有，很容易被忽略）。
+    这里在 Publish 之后显式补齐，保留 Pages 子目录结构。
+  -->
+  <Target Name="CopyXbfToPublishDir" AfterTargets="Publish">
+    <ItemGroup>
+      <_XbfToPublish Include="$(OutDir)**\*.xbf" />
+    </ItemGroup>
+    <Copy
+        SourceFiles="@(_XbfToPublish)"
+        DestinationFiles="@(_XbfToPublish->'$(PublishDir)%(RecursiveDir)%(Filename)%(Extension)')"
         SkipUnchangedFiles="true" />
   </Target>
 </Project>

@@ -18,9 +18,35 @@ public partial class InboxPage : Page
         Loaded += (_, _) => LoadInbox();
     }
 
+    /// <summary>收件箱只看最近 30 天：更早的记录不再打扰用户，也让徽标查询保持廉价。</summary>
+    private const int LookbackDays = 30;
+
+    /// <summary>前台不足 1 分钟的应用不进收件箱（点开就关的窗口没有分类价值）。</summary>
+    private const int MinForegroundSeconds = 60;
+
     /// <summary>未分类应用数量（供导航徽标）。</summary>
     public static int CountUnclassified()
-        => App.Current.Database.GetAllApps().Count(a => a.Category == CategoryService.Unclassified);
+        => GetInboxApps().Count;
+
+    private static List<(int Id, string Name, string Category, string ProcessName, int Ignored, int MergedInto,
+        string ExePath, string DefaultPurpose, int SegmentCount, string IconSource)> GetInboxApps()
+    {
+        var db = App.Current.Database;
+        var apps = db.GetAllApps().Where(a =>
+            a.Category == CategoryService.Unclassified &&
+            a.Ignored == 0 &&
+            a.MergedInto == 0 &&
+            !AppDisplayService.IsInboxNoise(a.ProcessName, a.ExePath)).ToList();
+        if (apps.Count == 0) return apps;
+
+        // 之前这里是 QueryAppUsage(UnixEpoch, UtcNow)：全库明细读进内存再做区间并集，
+        // 46 万行实测 522ms，而它会在 MainWindow 构造时同步执行。
+        // 现在只针对这批未分类应用查（走 idx_seg_app），几十毫秒量级。
+        var now = DateTime.UtcNow;
+        var active = db.QueryAppsWithMinForeground(
+            apps.Select(a => a.Id).ToList(), now.AddDays(-LookbackDays), now, MinForegroundSeconds);
+        return apps.Where(a => active.Contains(a.Id)).ToList();
+    }
 
     /// <summary>加载入口：失败时在页面内提示并可重试，而不是靠全局 handler 留白。</summary>
     private void LoadInbox()
@@ -42,9 +68,7 @@ public partial class InboxPage : Page
     private void LoadInboxCore()
     {
         _loading = true;
-        var apps = App.Current.Database.GetAllApps()
-            .Where(a => a.Category == CategoryService.Unclassified)
-            .ToList();
+        var apps = GetInboxApps();
 
         var items = apps.Select(a => new InboxItem(
             a.Id, a.Name, a.ProcessName, SafeIcon(a.ExePath),

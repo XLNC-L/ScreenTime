@@ -39,6 +39,13 @@ jobs:
           -o ScreenTime-WinUI
           -p:Version=${{ steps.ver.outputs.version }}
 
+      - name: 发布采集器（同一目录）
+        run: >
+          dotnet publish ScreenTime.Agent/ScreenTime.Agent.csproj
+          -c Release -r win-x64 --self-contained false
+          -o ScreenTime-WinUI
+          -p:Version=${{ steps.ver.outputs.version }}
+
       - name: 安装 Inno Setup
         run: choco install innosetup --no-progress -y
 
@@ -62,4 +69,4 @@ jobs:
           files: |
             dist/ScreenTime-Setup-*.exe
             dist/SHA256SUMS.txt
-          generate_release_notes: true
+          body_path: docs/RELEASE_NOTES.md

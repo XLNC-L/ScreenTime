@@ -28,9 +28,9 @@ public static class AppIconService
     /// <summary>显示尺寸 24 DIP；2x 缩放下 48 物理像素，解码限此尺寸即可，256 原图不占内存。</summary>
     private const int DecodePx = 48;
 
-    /// <summary>缓存条数上限：一台上用过的应用一般不到 200 个，256 足够；
+    /// <summary>缓存条数上限：保留常用图标即可，避免大量应用图标长期占用内存；
     /// 到顶整表清空一次（图标后台线程重新提取，不卡 UI），防止长期运行后无界增长。</summary>
-    private const int MaxCacheEntries = 256;
+    private const int MaxCacheEntries = 128;
 
     public static ImageSource? GetIcon(string exePath) => GetIcon(exePath, null);
 

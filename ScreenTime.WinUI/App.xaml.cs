@@ -21,7 +21,6 @@ public partial class App : Application
     private DispatcherQueue? _uiQueue;
 
     public Database Database { get; private set; } = null!;
-    public HistoryImportService HistoryImport { get; private set; } = null!;
 
     public static new App Current => (App)Application.Current;
 
@@ -41,11 +40,14 @@ public partial class App : Application
 
         Database = new Database(CommandLineValue("--db="));
         Database.Init();
-        // 结构升级/数据迁移（重分类、去重、补列）对大库可能较慢，
-        // 放后台线程执行，不挡窗口出现。新库 Init 已带全部列，旧库由 Migrate 幂等补齐；
-        // 采集由 Agent 进程负责，Agent 心跳 5 秒后才首次写库，与迁移有充分缓冲。
-        _ = System.Threading.Tasks.Task.Run(Database.Migrate);
-        HistoryImport = new HistoryImportService(Database);
+        // 结构升级/数据迁移（重分类、去重、补列）对大库可能较慢，放后台线程执行，不挡窗口出现。
+        // 新库 Init 已带全部列，旧库由 Migrate 幂等补齐；Migrate 内部有跨进程互斥，
+        // 与 Agent 同时启动时只会有一个真正执行。
+        _ = System.Threading.Tasks.Task.Run(() =>
+        {
+            try { Database.Migrate(); }
+            catch (Exception ex) { WriteError(ex); }
+        });
     }
 
     /// <summary>读取 <c>--key=value</c> 形式的命令行参数（未提供返回 null）。</summary>
@@ -150,10 +152,9 @@ public partial class App : Application
             }
         }
 
-        // 采集/托盘/自启由 Agent 进程（ScreenTime.Agent.exe）承担，UI 进程不常驻。
-        // 启动时确保它在跑：不在则拉起（Agent 有自己单实例，多拉无害）。
+        // 采集/托盘/自启/浏览器历史回填全部由 Agent 进程（ScreenTime.Agent.exe）承担，
+        // UI 进程不常驻。启动时确保它在跑：不在则拉起（Agent 有自己单实例，多拉无害）。
         EnsureAgentRunning();
-        HistoryImport.Start();
         StartActivationListener();
 
         _mainWindow = new MainWindow();
@@ -212,9 +213,10 @@ public partial class App : Application
     /// <summary>刷新收件箱导航徽标。</summary>
     public void RefreshInboxBadge() => _mainWindow?.RefreshInboxBadge();
 
+    public void RefreshCurrentPage() => _mainWindow?.RefreshCurrentPage();
+
     public void ExitApp()
     {
-        try { HistoryImport.Dispose(); } catch { }
         Exit();
     }
 

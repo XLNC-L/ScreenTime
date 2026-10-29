@@ -9,6 +9,7 @@ namespace ScreenTime.UI;
 /// </summary>
 public sealed class AppRankItem : INotifyPropertyChanged
 {
+    public int Id { get; }
     public string Name { get; }
     public string Duration { get; }
     public double BarPercent { get; }
@@ -30,9 +31,10 @@ public sealed class AppRankItem : INotifyPropertyChanged
 
     public event PropertyChangedEventHandler? PropertyChanged;
 
-    public AppRankItem(string name, string duration, double barPercent,
+    public AppRankItem(int id, string name, string duration, double barPercent,
         string exePath, string processName, string iconSource)
     {
+        Id = id;
         Name = name;
         Duration = duration;
         BarPercent = barPercent;

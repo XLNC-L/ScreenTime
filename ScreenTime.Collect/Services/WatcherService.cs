@@ -233,6 +233,15 @@ public sealed class WatcherService : IDisposable
             return;
         }
 
+        // 与收件箱和历史统计保持一致：明显的系统/安装器进程不采集。
+        // 这里刻意 CloseForeground 而不是"穿透"——安装器是用户真正在操作的窗口，
+        // 把时间算到上一个应用头上会失真；宁可这段不计时，也不要记到别人账上。
+        if (AppDisplayService.IsInboxNoise(info.ProcessName, info.ExePath))
+        {
+            CloseForeground();
+            return;
+        }
+
         // 系统外壳（开始菜单/搜索/通知/锁屏等）穿透：不记录外壳、不切换
         // 应用，当前真实应用片段继续延长。锁屏/睡眠/idle 已在上方处理。
         // 桌面（Program Manager）、解锁过渡窗这类瞬时窗口同样穿透。

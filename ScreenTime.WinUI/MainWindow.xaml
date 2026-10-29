@@ -48,18 +48,6 @@
                     </NavigationViewItem.Icon>
                     <TextBlock Text="历史" />
                 </NavigationViewItem>
-                <NavigationViewItem Tag="reports">
-                    <NavigationViewItem.Icon>
-                        <FontIcon Glyph="&#xE9F9;" />
-                    </NavigationViewItem.Icon>
-                    <TextBlock Text="报告" />
-                </NavigationViewItem>
-                <NavigationViewItem Tag="apps">
-                    <NavigationViewItem.Icon>
-                        <FontIcon Glyph="&#xE71D;" />
-                    </NavigationViewItem.Icon>
-                    <TextBlock Text="应用" />
-                </NavigationViewItem>
                 <NavigationViewItem Tag="web">
                     <NavigationViewItem.Icon>
                         <FontIcon Glyph="&#xE774;" />
@@ -68,14 +56,14 @@
                 </NavigationViewItem>
                 <NavigationViewItem Tag="inbox">
                     <NavigationViewItem.Icon>
-                        <FontIcon Glyph="&#xE89C;" />
+                        <FontIcon Glyph="&#xE8FD;" />
                     </NavigationViewItem.Icon>
                     <Grid>
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="*" />
                             <ColumnDefinition Width="Auto" />
                         </Grid.ColumnDefinitions>
-                        <TextBlock Grid.Column="0" Text="收件箱" VerticalAlignment="Center" />
+                        <TextBlock Grid.Column="0" Text="待办" VerticalAlignment="Center" />
                         <InfoBadge
                             x:Name="InboxBadge"
                             Grid.Column="1"

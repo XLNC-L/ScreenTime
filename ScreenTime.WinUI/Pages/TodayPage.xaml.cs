@@ -3,6 +3,7 @@ using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Shapes;
+using Microsoft.UI.Xaml.Input;
 using ScreenTime.Data;
 using ScreenTime.Services;
 using ScreenTime.Themes;
@@ -21,6 +22,9 @@ public partial class TodayPage : Page
 
     /// <summary>时间线全量重建的防抖（拖拽窗口时 SizeChanged 连发）与降频（5 分钟才重画）状态。</summary>
     private readonly DispatcherTimer _timelineDebounce = new() { Interval = TimeSpan.FromMilliseconds(150) };
+    private readonly SemaphoreSlim _numbersRefreshGate = new(1, 1);
+    private readonly SemaphoreSlim _chartsRefreshGate = new(1, 1);
+    private CancellationTokenSource? _iconLoadCts;
     private DateTime _lastTimelineDraw = DateTime.MinValue;
 
     private List<TimelineRow> _timeline = new();
@@ -47,14 +51,16 @@ public partial class TodayPage : Page
         Loaded += (_, _) =>
         {
             _dayKey = DateTime.Now.ToString("yyyy-MM-dd");
-            RefreshNumbers();
-            RefreshCharts();
+            SyncAppRankHeight();
+            _ = RefreshNumbersAsync();
+            _ = RefreshChartsAsync();
             _timer.Start();
         };
         Unloaded += (_, _) =>
         {
             _timer.Stop();
             _timelineDebounce.Stop();
+            _iconLoadCts?.Cancel();
         };
         // 窗口拖拽会连续触发 SizeChanged：150ms 防抖后只重画一次，避免连续全量重建
         TimelineGrid.SizeChanged += (_, _) =>
@@ -68,6 +74,15 @@ public partial class TodayPage : Page
             _lastTimelineDraw = DateTime.MinValue; // 强制重画
             DrawTimeline();
         };
+        LeftCol.SizeChanged += (_, _) => SyncAppRankHeight();
+    }
+
+    /// <summary>让应用排行卡片与左侧两块内容的总高度严格一致。</summary>
+    private void SyncAppRankHeight()
+    {
+        var height = LeftCol.ActualHeight;
+        if (height > 0 && (double.IsNaN(AppRankCard.Height) || Math.Abs(AppRankCard.Height - height) > 0.5))
+            AppRankCard.Height = height;
     }
 
     /// <summary>
@@ -88,51 +103,61 @@ public partial class TodayPage : Page
             // 跨天：日期、时间线范围全变，直接全量刷新（时间线强制重建，不能被降频挡掉）
             _dayKey = dayKey;
             _lastTimelineDraw = DateTime.MinValue;
-            RefreshNumbers();
-            RefreshCharts();
+            _ = RefreshNumbersAsync();
+            _ = RefreshChartsAsync();
             return;
         }
 
-        if (_ticks % 10 == 0) RefreshNumbers();
-        if (_ticks % 30 == 0) RefreshCharts();
+        if (_ticks % 10 == 0) _ = RefreshNumbersAsync();
+        if (_ticks % 30 == 0) _ = RefreshChartsAsync();
     }
 
     /// <summary>轻量数字刷新：日期 + 四张卡片时长（分钟粒度，秒级变化不展示）。</summary>
-    private void RefreshNumbers()
+    private async Task RefreshNumbersAsync()
     {
+        if (!await _numbersRefreshGate.WaitAsync(0)) return;
         try
         {
             var today = DateTime.Now;
-            DateText.Text = today.ToString("yyyy年M月d日 dddd");
             var (from, to) = StatsService.DayRange(today);
+            var snapshot = await Task.Run(() =>
+            {
+                var segments = _db.QuerySegments(from, to);
+                var total = StatsService.UnionSeconds(segments.Select(s => (s.Start, s.End)).ToList());
+                var fg = StatsService.UnionSeconds(
+                    segments.Where(s => s.Kind == "foreground").Select(s => (s.Start, s.End)).ToList());
+                return (Total: total, Foreground: fg, ScreenOn: _db.GetDisplayOnSeconds(from, to));
+            });
 
-            var segments = _db.QuerySegments(from, to);
-            var totalSec = StatsService.UnionSeconds(segments.Select(s => (s.Start, s.End)).ToList());
-            var fgSec = StatsService.UnionSeconds(
-                segments.Where(s => s.Kind == "foreground").Select(s => (s.Start, s.End)).ToList());
+            DateText.Text = today.ToString("yyyy年M月d日 dddd");
 
             // 分钟粒度：先按分钟取整再做差，保证「总 = 前台 + 后台」显示上严格相加
-            var totalMin = (long)Math.Floor(totalSec / 60.0);
-            var fgMin = (long)Math.Floor(fgSec / 60.0);
+            var totalMin = (long)Math.Floor(snapshot.Total / 60.0);
+            var fgMin = (long)Math.Floor(snapshot.Foreground / 60.0);
             var bgMin = Math.Max(0, totalMin - fgMin);
 
             TotalText.Text = StatsService.FormatDurationMinute(totalMin * 60.0);
             FgText.Text = StatsService.FormatDurationMinute(fgMin * 60.0);
             AudioText.Text = StatsService.FormatDurationMinute(bgMin * 60.0);
-            ScreenOnText.Text = StatsService.FormatDurationMinute(_db.GetDisplayOnSeconds(from, to));
+            ScreenOnText.Text = StatsService.FormatDurationMinute(snapshot.ScreenOn);
         }
         catch
         {
             // 单次刷新失败不打断节拍；30 秒内的全量刷新会再次尝试并显示错误
         }
+        finally
+        {
+            _numbersRefreshGate.Release();
+        }
     }
 
     /// <summary>全量刷新入口：图表 / 排行 / 时间线。失败时在页面内提示并可重试。</summary>
-    private void RefreshCharts()
+    private async Task RefreshChartsAsync()
     {
+        if (!await _chartsRefreshGate.WaitAsync(0)) return;
         try
         {
-            RefreshChartsCore();
+            await RefreshChartsCoreAsync();
             ErrorBar.IsOpen = false;
         }
         catch (Exception ex)
@@ -140,15 +165,49 @@ public partial class TodayPage : Page
             ErrorBar.Message = ex.Message;
             ErrorBar.IsOpen = true;
         }
+        finally
+        {
+            _chartsRefreshGate.Release();
+        }
     }
 
-    private void RetryBtn_Click(object sender, RoutedEventArgs e) => RefreshCharts();
+    private void RetryBtn_Click(object sender, RoutedEventArgs e) => _ = RefreshChartsAsync();
 
-    private void RefreshChartsCore()
+    private void AppList_RightTapped(object sender, RightTappedRoutedEventArgs e)
+    {
+        var item = FindAncestor<ListViewItem>(e.OriginalSource as DependencyObject);
+        if (item?.Content is AppRankItem app)
+        {
+            // 今日页只给基础操作，管理类菜单统一放历史页，避免日常查看时菜单过长
+            AppActionMenu.Show(item, app, e.GetPosition(item), full: false);
+            e.Handled = true;
+        }
+    }
+
+    private static T? FindAncestor<T>(DependencyObject? node) where T : DependencyObject
+    {
+        while (node is not null)
+        {
+            if (node is T match) return match;
+            node = VisualTreeHelper.GetParent(node);
+        }
+        return null;
+    }
+
+    private async Task RefreshChartsCoreAsync()
     {
         var today = DateTime.Now;
         var (from, to) = StatsService.DayRange(today);
-        var apps = _db.QueryAppUsage(from, to);
+        // SQLite 查询和聚合全部在线程池执行，避免定时刷新阻塞 XAML 布局线程。
+        var snapshot = await Task.Run(() =>
+        {
+            var apps = _db.QueryAppUsage(from, to);
+            var allApps = _db.GetAllApps();
+            var purposes = _db.QueryPurposeUsage(from, to);
+            var timeline = _db.QueryTimeline(today);
+            return (Apps: apps, AllApps: allApps, Purposes: purposes, Timeline: timeline);
+        });
+        var apps = snapshot.Apps;
 
         // 分类占比（过滤无时长的空类别）
         var byCategory = apps
@@ -164,7 +223,7 @@ public partial class TodayPage : Page
                 catTotal > 0 ? $"{x.Seconds / catTotal * 100:0}%" : "0%")).ToList();
 
         // 应用排行（带图标）：先显示无图标行，后台提取图标字节后逐个填充
-        var iconByApp = _db.GetAllApps().ToDictionary(a => a.Id,
+        var iconByApp = snapshot.AllApps.ToDictionary(a => a.Id,
             a => (a.ExePath, a.ProcessName, a.IconSource));
         var maxSec = apps.Count > 0 ? Math.Max(apps.Max(a => a.TotalSeconds), 1) : 1;
         var rows = apps
@@ -172,16 +231,16 @@ public partial class TodayPage : Page
             .Select(a =>
             {
                 iconByApp.TryGetValue(a.AppId, out var p);
-                return new AppRankItem(a.AppName, StatsService.FormatDuration(a.TotalSeconds),
+                return new AppRankItem(a.AppId, a.AppName, StatsService.FormatDuration(a.TotalSeconds),
                     a.TotalSeconds / maxSec * 100, p.ExePath, p.ProcessName, p.IconSource);
             })
             .ToList();
         AppList.ItemsSource = rows;
         FillIconsAsync(rows);
 
-        LoadPurpose(from, to);
+        LoadPurpose(snapshot.Purposes);
 
-        _timeline = _db.QueryTimeline(today);
+        _timeline = snapshot.Timeline;
         // 时间线全量重建降频：30 秒节拍里，5 分钟内不重画整条轨道——
         // 期间新片段对轨道形状影响很小，游标由秒级 tick 平滑平移即可；
         // 跨天 / 主题切换 / 窗口尺寸变化走强制重建（上面已把 _lastTimelineDraw 置 MinValue）。
@@ -195,7 +254,7 @@ public partial class TodayPage : Page
         try
         {
             _lastTimelineDraw = DateTime.MinValue; // 时间线 bar 颜色也依赖色板，必须重画
-            RefreshChartsCore();
+            _ = RefreshChartsAsync();
             ErrorBar.IsOpen = false;
         }
         catch (Exception ex)
@@ -211,6 +270,10 @@ public partial class TodayPage : Page
     /// </summary>
     private void FillIconsAsync(List<AppRankItem> rows)
     {
+        _iconLoadCts?.Cancel();
+        _iconLoadCts?.Dispose();
+        _iconLoadCts = new CancellationTokenSource();
+        var token = _iconLoadCts.Token;
         var ui = DispatcherQueue.GetForCurrentThread();
         var pending = new List<AppRankItem>();
         foreach (var row in rows)
@@ -223,20 +286,31 @@ public partial class TodayPage : Page
 
         _ = System.Threading.Tasks.Task.Run(() =>
         {
-            Parallel.ForEach(pending, row =>
+            try
             {
-                var bytes = AppIconService.GetIconBytes(row.ExePath, row.ProcessName, row.IconSource);
-                if (bytes is null) return;
-                var capture = bytes;
-                ui.TryEnqueue(() => row.Icon =
-                    AppIconService.BytesToImageCached(capture, row.ExePath, row.ProcessName, row.IconSource));
-            });
+                Parallel.ForEach(pending, new ParallelOptions
+                {
+                    MaxDegreeOfParallelism = 2,
+                    CancellationToken = token
+                }, row =>
+                {
+                    if (token.IsCancellationRequested) return;
+                    var bytes = AppIconService.GetIconBytes(row.ExePath, row.ProcessName, row.IconSource);
+                    if (bytes is null) return;
+                    var capture = bytes;
+                    ui.TryEnqueue(() =>
+                    {
+                        if (!token.IsCancellationRequested)
+                            row.Icon = AppIconService.BytesToImageCached(capture, row.ExePath, row.ProcessName, row.IconSource);
+                    });
+                });
+            }
+            catch (OperationCanceledException) { }
         });
     }
 
-    private void LoadPurpose(DateTime fromUtc, DateTime toUtc)
+    private void LoadPurpose(List<(string Purpose, double TotalSeconds)> purposes)
     {
-        var purposes = _db.QueryPurposeUsage(fromUtc, toUtc);
         var total = purposes.Sum(p => p.TotalSeconds);
 
         PurposeBar.Children.Clear();

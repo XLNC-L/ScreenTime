@@ -14,9 +14,12 @@
   - `ExtendsContentIntoTitleBar = true`，用 `SetTitleBar` 设置 8px 拖拽区（标题栏保持系统原生按钮，不手绘）
   - 根容器：`NavigationView`，`PaneDisplayMode=Left`，`IsBackButtonVisible=Collapsed`
   - 内容承载：`Frame`，`NavigationView.SelectionChanged` 中 `Navigate`；或用 `NavigationViewItem` 的数据绑定
-  - 关闭窗口（`AppWindow.Closing`）→ 取消关闭、`Hide()`（最小化到托盘）
-- 托盘：`H.NotifyIcon.WinUI`（WinUI 无内置托盘），`MenuFlyout`：打开统计 / 退出；左键单击恢复
-- 单实例：`Mutex`（沿用现有逻辑）
+  - 关闭窗口（`AppWindow.Closing`）→ **不取消，进程直接退出**（v1.2.0 起）。
+    采集与托盘已移交 `ScreenTime.Agent.exe` 常驻进程，UI 不留后台，显示态内存随进程释放。
+- 托盘：由 **Agent 进程**用纯 Win32（`NOTIFYICON` + 隐藏消息窗口 + `TrackPopupMenu`）实现，
+  菜单：打开统计 / 退出；左键单击拉起 UI。UI 侧不再引用 `H.NotifyIcon`。
+- 单实例：UI 用 `Mutex` + 命名管道唤起（`ScreenTime_Activate`）；
+  Agent 用自己的 `Mutex`（`ScreenTime_Agent_Mutex`）。
 
 ## 2. 导航项（NavigationView + Segoe Fluent Icons）
 
@@ -24,9 +27,14 @@
 |---|---|
 | 今日 | `` Home (`\uE80F`) |
 | 历史 | `` Calendar (`\uE787`) |
-| 报告 | `` Diagnostic / BarChart (`\uE9F9`) |
-| 应用 | `` AllApps (`\uE71D`) |
-| 设置 | `` Settings (`\uE713`) |
+| 报告 | `\uE9F9` Diagnostic / BarChart —— **已并入历史页，不再是独立导航项** |
+| 应用 | `\uE71D` AllApps —— **已并入历史页右键菜单，不再是独立导航项** |
+| 网页 | `\uE774` Globe |
+| 待办 | `\uE8FD` Mail |
+| 设置 | `\uE713` Settings |
+
+> 报告页的指标（总时长 / 日均 / 最活跃时段 / 分类占比 / 用途分布 / 每日柱状图）
+> 已在 v1.2.0 全部并入历史页；历史页的应用排行支持右键改分类、设用途、忽略、合并。
 
 ---
 

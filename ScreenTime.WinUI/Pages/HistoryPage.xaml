@@ -48,12 +48,19 @@
                             <TextBlock Margin="8,0,0,0" Text="查询" />
                         </StackPanel>
                     </Button>
+                    <AutoSuggestBox
+                        x:Name="AppSearchBox"
+                        Grid.Column="3"
+                        Width="240"
+                        PlaceholderText="搜索应用或进程"
+                        TextChanged="AppSearchBox_TextChanged" />
                 </Grid>
             </Border>
 
             <!-- 概览 -->
             <Grid ColumnSpacing="12">
                 <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
                     <ColumnDefinition Width="*" />
                     <ColumnDefinition Width="*" />
                     <ColumnDefinition Width="*" />
@@ -74,6 +81,12 @@
                     <StackPanel Spacing="4">
                         <TextBlock Style="{StaticResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" Text="天数" />
                         <TextBlock x:Name="DaysText" Style="{StaticResource TitleTextBlockStyle}" />
+                    </StackPanel>
+                </Border>
+                <Border Grid.Column="3" Padding="16" CornerRadius="8" Background="{ThemeResource CardBackgroundFillColorDefaultBrush}" BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1">
+                    <StackPanel Spacing="4">
+                        <TextBlock Style="{StaticResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" Text="最活跃时段" />
+                        <TextBlock x:Name="ActiveHoursText" Style="{StaticResource TitleTextBlockStyle}" Text="暂无数据" />
                     </StackPanel>
                 </Border>
             </Grid>
@@ -131,7 +144,10 @@
                     BorderThickness="1"
                     CornerRadius="8">
                     <StackPanel Spacing="12">
-                        <TextBlock Style="{StaticResource SubtitleTextBlockStyle}" Text="用途分布" />
+                        <Grid>
+                            <TextBlock Style="{StaticResource SubtitleTextBlockStyle}" Text="用途分布" />
+                            <Button x:Name="NormalizeBtn" HorizontalAlignment="Right" Padding="10,4" Click="NormalizeBtn_Click" Content="未判定一键归类" />
+                        </Grid>
                         <Grid x:Name="PurposeBar" Height="12" />
                         <ItemsControl x:Name="PurposeLegend">
                             <ItemsControl.ItemTemplate>
@@ -169,7 +185,46 @@
                             <RowDefinition Height="Auto" />
                             <RowDefinition Height="*" />
                         </Grid.RowDefinitions>
-                        <TextBlock Grid.Row="0" Style="{StaticResource SubtitleTextBlockStyle}" Text="应用排行" />
+                        <Grid Grid.Row="0" ColumnSpacing="8">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <TextBlock
+                                Grid.Column="0"
+                                Style="{StaticResource SubtitleTextBlockStyle}"
+                                Text="应用排行"
+                                VerticalAlignment="Center" />
+                            <StackPanel
+                                Grid.Column="1"
+                                Orientation="Horizontal"
+                                Spacing="6"
+                                VerticalAlignment="Center">
+                                <StackPanel
+                                    x:Name="CategoryFilterChip"
+                                    Orientation="Horizontal"
+                                    Spacing="4"
+                                    VerticalAlignment="Center"
+                                    Visibility="Collapsed">
+                                    <TextBlock
+                                        x:Name="CategoryFilterText"
+                                        FontSize="12"
+                                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                        VerticalAlignment="Center" />
+                                    <Button
+                                        Padding="8,2"
+                                        FontSize="12"
+                                        Click="ClearCategoryBtn_Click"
+                                        Content="清除筛选" />
+                                </StackPanel>
+                                <Button
+                                    x:Name="ImportAppsBtn"
+                                    Padding="10,4"
+                                    FontSize="12"
+                                    Click="ImportAppsBtn_Click"
+                                    Content="导入应用" />
+                            </StackPanel>
+                        </Grid>
                         <!-- 用 ListView 而不是 ItemsControl+ScrollViewer：ItemsControl 无虚拟化，
                              几十个应用 × 每项 5 控件全部实例化，内存和布局都吃亏。ListView 自带虚拟化 + 滚动 -->
                         <ListView
@@ -177,7 +232,8 @@
                             Grid.Row="1"
                             Margin="0,12,0,0"
                             SelectionMode="None"
-                            IsItemClickEnabled="False">
+                            IsItemClickEnabled="False"
+                            RightTapped="AppList_RightTapped">
                             <ListView.ItemTemplate>
                                 <DataTemplate>
                                     <Grid Margin="0,4">
@@ -218,6 +274,29 @@
                         </Grid>
                 </Border>
             </Grid>
+
+            <Border Padding="16" Background="{ThemeResource CardBackgroundFillColorDefaultBrush}" BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1" CornerRadius="8">
+                <StackPanel Spacing="8">
+                    <TextBlock Style="{StaticResource SubtitleTextBlockStyle}" Text="每日时长" />
+                    <ScrollViewer HorizontalScrollBarVisibility="Auto" HorizontalScrollMode="Enabled">
+                        <ItemsControl x:Name="Bars">
+                            <ItemsControl.ItemsPanel><ItemsPanelTemplate><StackPanel Orientation="Horizontal" /></ItemsPanelTemplate></ItemsControl.ItemsPanel>
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <Grid Width="40" Margin="0,0,8,0">
+                                        <Grid.RowDefinitions><RowDefinition Height="184" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
+                                        <StackPanel Grid.Row="0" VerticalAlignment="Bottom">
+                                            <TextBlock Margin="0,0,0,2" HorizontalAlignment="Center" Style="{StaticResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" Text="{Binding Hours}" />
+                                            <Rectangle Height="{Binding BarHeight}" RadiusX="4" RadiusY="4" Fill="{Binding Brush}" ToolTipService.ToolTip="{Binding Tip}" />
+                                        </StackPanel>
+                                        <TextBlock Grid.Row="1" HorizontalAlignment="Center" Style="{StaticResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" Text="{Binding Label}" />
+                                    </Grid>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </ScrollViewer>
+                </StackPanel>
+            </Border>
 
         </StackPanel>
     </ScrollViewer>

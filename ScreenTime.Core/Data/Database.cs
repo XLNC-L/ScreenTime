@@ -14,6 +14,8 @@ public record AppUsageRow(
     double AudioSeconds,
     double TotalSeconds);
 
+public record AppDailyUsageRow(string Day, double Seconds);
+
 public record TimelineRow(
     string StartUtc,
     string EndUtc,
@@ -30,6 +32,11 @@ public record PageUsageRow(string Site, string Title, string Url, double Seconds
 
 /// <summary>跨浏览器的网页使用行。ProcessName 用于区分同一页面的来源浏览器。</summary>
 public record WebPageRow(string Site, string Title, string Url, string AppName, string ProcessName, double Seconds);
+
+/// <summary>网页时间线中的单个浏览片段。</summary>
+public record WebTimelineRow(
+    DateTime StartUtc, DateTime EndUtc, string Site, string Title, string Url,
+    string AppName, string ProcessName);
 
 /// <summary>待回填的片段：无 site 的浏览器前台记录。</summary>
 public record BackfillCandidateRow(long Id, int AppId, DateTime StartUtc, DateTime EndUtc, string Title);
@@ -149,10 +156,9 @@ public sealed class Database
         c.Open();
         using (var pragma = c.CreateCommand())
         {
-            // busy_timeout：采集心跳在后台线程、页面查询在 UI 线程，两边可能同时写。
-            // 让后来的写入等一会儿而不是直接抛 SQLITE_BUSY。
-            pragma.CommandText =
-                "PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=3000;";
+            // 采集心跳在后台线程、页面查询在工作线程，两边可能同时写。
+            // WAL 只在初始化时设置；每次查询都切换 journal_mode 会制造额外锁竞争。
+            pragma.CommandText = "PRAGMA foreign_keys=ON; PRAGMA busy_timeout=3000;";
             pragma.ExecuteNonQuery();
         }
         return c;
@@ -161,6 +167,14 @@ public sealed class Database
     public void Init()
     {
         using var c = Open();
+        // 只在还不是 WAL 时才切换：切 journal_mode 需要排他锁，
+        // 每次启动都设一遍会在 Agent 正在写库时白等（表现为「双击图标半天不出窗口」）。
+        if (!IsWalMode(c))
+        {
+            using var wal = c.CreateCommand();
+            wal.CommandText = "PRAGMA journal_mode=WAL;";
+            wal.ExecuteNonQuery();
+        }
         using var cmd = c.CreateCommand();
         cmd.CommandText = """
             CREATE TABLE IF NOT EXISTS apps (
@@ -171,6 +185,7 @@ public sealed class Database
                 company TEXT NOT NULL DEFAULT '',
                 category TEXT NOT NULL DEFAULT '未分类',
                 category_manual INTEGER NOT NULL DEFAULT 0,
+                ignored_manual INTEGER NOT NULL DEFAULT 0,
                 default_purpose TEXT NOT NULL DEFAULT '',
                 icon_source TEXT NOT NULL DEFAULT '',
                 merged_into INTEGER NOT NULL DEFAULT 0,
@@ -193,6 +208,8 @@ public sealed class Database
             );
             CREATE INDEX IF NOT EXISTS idx_seg_day ON usage_segments(day);
             CREATE INDEX IF NOT EXISTS idx_seg_app ON usage_segments(app_id);
+            -- 收件箱徽标/单应用历史都按「应用 + 日期区间」查，复合索引省掉回表扫描
+            CREATE INDEX IF NOT EXISTS idx_seg_app_day ON usage_segments(app_id, day);
 
             CREATE TABLE IF NOT EXISTS session_events (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -207,16 +224,71 @@ public sealed class Database
             );
             """;
         cmd.ExecuteNonQuery();
+        // 旧库补列必须在任何引用这些列的 SQL 之前完成：
+        // MarkNoiseAppsIgnored 会读 ignored_manual，放到 Migrate 里补列就晚了。
+        EnsureSchemaColumns(c);
+
+        // 噪声扫描是全表 UPDATE，一天跑一次足够；新应用入库时已就地判定（见 GetOrCreateApp）。
+        var today = DateTime.Now.ToString("yyyy-MM-dd");
+        if (GetSettingRaw(c, "noise_scan_day", "") != today)
+        {
+            MarkNoiseAppsIgnored(c);
+            SetSettingRaw(c, "noise_scan_day", today);
+        }
     }
 
-    /// <summary>
-    /// 一次性结构升级与数据迁移：补充用途/手动分类列、对历史数据重分类、
-    /// 合并重复的自身记录。幂等，可重复执行。
-    /// </summary>
-    public void Migrate()
+    private static bool IsWalMode(SqliteConnection c)
     {
-        using var c = Open();
+        try
+        {
+            using var cmd = c.CreateCommand();
+            cmd.CommandText = "PRAGMA journal_mode;";
+            return string.Equals(cmd.ExecuteScalar() as string, "wal", StringComparison.OrdinalIgnoreCase);
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static string GetSettingRaw(SqliteConnection c, string key, string fallback)
+    {
+        try
+        {
+            using var cmd = c.CreateCommand();
+            cmd.CommandText = "SELECT value FROM settings WHERE key=$k";
+            cmd.Parameters.AddWithValue("$k", key);
+            return cmd.ExecuteScalar() as string ?? fallback;
+        }
+        catch
+        {
+            return fallback;
+        }
+    }
+
+    private static void SetSettingRaw(SqliteConnection c, string key, string value)
+    {
+        try
+        {
+            using var cmd = c.CreateCommand();
+            cmd.CommandText =
+                "INSERT INTO settings(key,value) VALUES($k,$v) ON CONFLICT(key) DO UPDATE SET value=$v";
+            cmd.Parameters.AddWithValue("$k", key);
+            cmd.Parameters.AddWithValue("$v", value);
+            cmd.ExecuteNonQuery();
+        }
+        catch
+        {
+            // 标记写失败不影响主流程，下次启动会再扫一遍
+        }
+    }
+
+    /// <summary>补齐旧库缺失的列（幂等）。</summary>
+    private static void EnsureSchemaColumns(SqliteConnection c)
+    {
         EnsureColumn(c, "apps", "category_manual", "INTEGER NOT NULL DEFAULT 0");
+        // 用户亲手改过「忽略」标记：自动噪声忽略不再覆盖
+        EnsureColumn(c, "apps", "ignored_manual", "INTEGER NOT NULL DEFAULT 0");
         EnsureColumn(c, "apps", "default_purpose", "TEXT NOT NULL DEFAULT ''");
         // 显式图标来源（UWP 包内 PNG 等）；为空时回退到从 exe 提取
         EnsureColumn(c, "apps", "icon_source", "TEXT NOT NULL DEFAULT ''");
@@ -224,6 +296,68 @@ public sealed class Database
         EnsureColumn(c, "usage_segments", "site", "TEXT NOT NULL DEFAULT ''");
         // 原始可跳转地址（site 为归一化聚合键，url 仅供点击跳转，不含追踪参数）
         EnsureColumn(c, "usage_segments", "url", "TEXT NOT NULL DEFAULT ''");
+    }
+
+    /// <summary>
+    /// 把明显的系统/安装器噪声应用标记为忽略，使历史统计也不再计入。
+    /// 进程名单来自 <see cref="AppDisplayService.NoiseProcessNames"/>，与收件箱过滤共用同一份，
+    /// 避免两处规则漂移。用户手动恢复过的应用（ignored_manual=1）不在此覆盖。
+    /// <para>
+    /// 路径匹配用 instr 而不是 LIKE：LIKE 的 <c>\</c> 在 SQLite 里是普通字符，
+    /// 原先写的 <c>'%\\appdata\\local\\temp\\%'</c> 要求两个连续反斜杠，实际路径只有一个，
+    /// 这条过滤从来没生效过（Autoruns 这类 Temp 解压程序一直没被忽略）。
+    /// </para>
+    /// </summary>
+    private static void MarkNoiseAppsIgnored(SqliteConnection c)
+    {
+        // process_name 有的存不带 .exe、有的带，两种形式都放进 IN 列表
+        var names = AppDisplayService.NoiseProcessNames
+            .SelectMany(n => new[] { n, n + ".exe" })
+            .ToList();
+        var inList = string.Join(",", names.Select((_, i) => $"$n{i}"));
+        var pathClauses = string.Join(" OR ", AppDisplayService.NoisePathFragments
+            .Select((_, i) => $"instr(lower(exe_path), $p{i}) > 0"));
+
+        using var cmd = c.CreateCommand();
+        cmd.CommandText = $"""
+            UPDATE apps SET ignored=1
+            WHERE ignored_manual = 0
+              AND (lower(process_name) IN ({inList}) OR {pathClauses});
+            """;
+        for (var i = 0; i < names.Count; i++) cmd.Parameters.AddWithValue($"$n{i}", names[i]);
+        for (var i = 0; i < AppDisplayService.NoisePathFragments.Length; i++)
+            cmd.Parameters.AddWithValue($"$p{i}", AppDisplayService.NoisePathFragments[i].ToLowerInvariant());
+        cmd.ExecuteNonQuery();
+    }
+
+    /// <summary>
+    /// 结构升级与数据迁移：对历史数据重分类、合并重复记录。幂等，可重复执行。
+    /// <para>
+    /// UI 与 Agent 启动时都会调用：用跨进程互斥把两边串起来，避免同时 ALTER / 合并互相踩。
+    /// 拿不到锁说明另一个进程正在迁移，直接跳过即可（对方做完结果一样）。
+    /// </para>
+    /// </summary>
+    public void Migrate()
+    {
+        using var gate = new Mutex(false, "ScreenTime_Migrate_Mutex");
+        var acquired = false;
+        try
+        {
+            try { acquired = gate.WaitOne(TimeSpan.FromSeconds(30)); }
+            catch (AbandonedMutexException) { acquired = true; } // 上个进程异常退出，锁归我们
+            if (!acquired) return;
+            MigrateCore();
+        }
+        finally
+        {
+            if (acquired) gate.ReleaseMutex();
+        }
+    }
+
+    private void MigrateCore()
+    {
+        using var c = Open();
+        // 列已在 Init → EnsureSchemaColumns 补齐，这里只做数据层面的迁移
 
         // 1) 全局重映射旧分类名 → 新分类名（类别改名，手动分类也同步）
         var rename = new List<(int Id, string Category)>();
@@ -338,7 +472,14 @@ public sealed class Database
         if (exists) return;
         using var add = c.CreateCommand();
         add.CommandText = $"ALTER TABLE {table} ADD COLUMN {column} {declaration}";
-        add.ExecuteNonQuery();
+        try
+        {
+            add.ExecuteNonQuery();
+        }
+        catch (SqliteException ex) when (ex.Message.Contains("duplicate column", StringComparison.OrdinalIgnoreCase))
+        {
+            // PRAGMA 与 ALTER 之间被另一个进程抢先补上了，结果一致，忽略
+        }
     }
 
     /// <summary>把同一进程名的多个条目合并为最早的一条（转移片段后删除多余项）。</summary>
@@ -619,13 +760,14 @@ public sealed class Database
 
         using var ins = c.CreateCommand();
         ins.CommandText = """
-            INSERT INTO apps (exe_path, process_name, app_name, category)
-            VALUES ('',$n,$a,$ca);
+            INSERT INTO apps (exe_path, process_name, app_name, category, ignored)
+            VALUES ('',$n,$a,$ca,$ig);
             SELECT last_insert_rowid();
             """;
         ins.Parameters.AddWithValue("$n", processName);
         ins.Parameters.AddWithValue("$a", appName);
         ins.Parameters.AddWithValue("$ca", category);
+        ins.Parameters.AddWithValue("$ig", AppDisplayService.IsInboxNoise(processName, "") ? 1 : 0);
         return (int)(long)ins.ExecuteScalar()!;
     }
 
@@ -669,8 +811,8 @@ public sealed class Database
 
         using var ins = c.CreateCommand();
         ins.CommandText = """
-            INSERT INTO apps (exe_path, process_name, app_name, company, category, icon_source)
-            VALUES ($p,$n,$a,$co,$ca,$ic);
+            INSERT INTO apps (exe_path, process_name, app_name, company, category, icon_source, ignored)
+            VALUES ($p,$n,$a,$co,$ca,$ic,$ig);
             SELECT last_insert_rowid();
             """;
         ins.Parameters.AddWithValue("$p", exePath);
@@ -679,6 +821,8 @@ public sealed class Database
         ins.Parameters.AddWithValue("$co", company);
         ins.Parameters.AddWithValue("$ca", category);
         ins.Parameters.AddWithValue("$ic", iconSource);
+        // 新应用入库时就判定噪声，不必等每日全表扫描
+        ins.Parameters.AddWithValue("$ig", AppDisplayService.IsInboxNoise(processName, exePath) ? 1 : 0);
         return (int)(long)ins.ExecuteScalar()!;
     }
 
@@ -1133,6 +1277,98 @@ public sealed class Database
         return rows;
     }
 
+    /// <summary>查询单个应用按本地日期拆分的使用时长，前台与音频重叠只计算一次。</summary>
+    public List<AppDailyUsageRow> QueryAppDailyUsage(int appId, DateTime fromUtc, DateTime toUtc)
+    {
+        using var c = Open();
+        var map = LoadAppInfo(c);
+        if (!map.TryGetValue(appId, out var src)) return [];
+        var effective = ResolveEffectiveAppId(map, appId);
+        if (!map.TryGetValue(effective, out var target) || src.Ignored != 0 || target.Ignored != 0)
+            return [];
+
+        var ids = map.Keys.Where(id => ResolveEffectiveAppId(map, id) == effective).ToList();
+        if (ids.Count == 0) return [];
+
+        var buckets = new Dictionary<DateTime, List<(DateTime Start, DateTime End)>>();
+        using var cmd = c.CreateCommand();
+        var inList = string.Join(",", ids.Select((_, i) => $"$a{i}"));
+        cmd.CommandText = $"""
+            SELECT start_ts, end_ts FROM usage_segments
+            WHERE app_id IN ({inList}) AND end_ts > $f AND start_ts < $t
+            """;
+        for (var i = 0; i < ids.Count; i++) cmd.Parameters.AddWithValue($"$a{i}", ids[i]);
+        cmd.Parameters.AddWithValue("$f", ToIso(fromUtc));
+        cmd.Parameters.AddWithValue("$t", ToIso(toUtc));
+        using var r = cmd.ExecuteReader();
+        while (r.Read())
+        {
+            var start = ParseIso(r.GetString(0));
+            var end = ParseIso(r.GetString(1));
+            if (start < fromUtc) start = fromUtc;
+            if (end > toUtc) end = toUtc;
+            while (start < end)
+            {
+                var localDay = start.ToLocalTime().Date;
+                var nextDayUtc = localDay.AddDays(1).ToUniversalTime();
+                var partEnd = end < nextDayUtc ? end : nextDayUtc;
+                if (!buckets.TryGetValue(localDay, out var intervals))
+                    buckets[localDay] = intervals = new List<(DateTime, DateTime)>();
+                intervals.Add((start, partEnd));
+                start = partEnd;
+            }
+        }
+
+        return buckets.OrderByDescending(x => x.Key)
+            .Select(x => new AppDailyUsageRow(x.Key.ToString("yyyy-MM-dd"), StatsService.UnionSeconds(x.Value)))
+            .Where(x => x.Seconds > 0)
+            .ToList();
+    }
+
+    /// <summary>
+    /// 查询给定应用中，前台使用达到阈值的 id。
+    /// <para>
+    /// 只针对传入的 id 查（走 idx_seg_app），而不是全库 GROUP BY —— 收件箱只关心那几十个
+    /// 未分类应用，没必要扫全表。SUM 不去重（重叠片段会重复计），这里只用于
+    /// 「这个应用到底有没有被用过」的判断，对阈值判断没有影响。
+    /// </para>
+    /// </summary>
+    public HashSet<int> QueryAppsWithMinForeground(IReadOnlyCollection<int> appIds,
+        DateTime fromUtc, DateTime toUtc, double minSeconds)
+    {
+        var set = new HashSet<int>();
+        if (appIds.Count == 0) return set;
+
+        using var c = Open();
+        var ids = appIds.ToList();
+        // SQLite 参数数量有上限，分批查
+        const int batchSize = 500;
+        for (var offset = 0; offset < ids.Count; offset += batchSize)
+        {
+            var batch = ids.Skip(offset).Take(batchSize).ToList();
+            using var cmd = c.CreateCommand();
+            var inList = string.Join(",", batch.Select((_, i) => $"$a{i}"));
+            cmd.CommandText = $"""
+                SELECT app_id
+                FROM usage_segments
+                WHERE app_id IN ({inList})
+                  AND day >= $dayFrom
+                  AND kind = 'foreground'
+                  AND end_ts > $f AND start_ts < $t
+                GROUP BY app_id
+                HAVING SUM((julianday(end_ts) - julianday(start_ts)) * 86400.0) >= $min
+                """;
+            for (var i = 0; i < batch.Count; i++) cmd.Parameters.AddWithValue($"$a{i}", batch[i]);
+            cmd.Parameters.AddWithValue("$dayFrom", fromUtc.ToLocalTime().ToString("yyyy-MM-dd"));
+            cmd.Parameters.AddWithValue("$f", ToIso(fromUtc));
+            cmd.Parameters.AddWithValue("$t", ToIso(toUtc));
+            cmd.Parameters.AddWithValue("$min", minSeconds);
+            using var r = cmd.ExecuteReader();
+            while (r.Read()) set.Add(r.GetInt32(0));
+        }
+        return set;
+    }
+
     private record AppInfoRow(string AppName, string ProcessName, string Category, int Ignored, int MergedInto);
 
     /// <summary>加载应用合并/忽略元信息（id → 信息）。</summary>
@@ -1251,6 +1487,8 @@ public sealed class Database
             JOIN apps a ON a.id = s.app_id
             LEFT JOIN apps ca ON ca.id = a.merged_into
             WHERE s.end_ts > $f AND s.start_ts < $t
+              AND a.ignored = 0
+              AND (a.merged_into = 0 OR ca.ignored = 0)
             ORDER BY s.start_ts
             """;
         cmd.Parameters.AddWithValue("$f", ToIso(fromUtc));
@@ -1347,6 +1585,41 @@ public sealed class Database
         foreach (var ((appId, site, title, url), seconds) in merged)
             list.Add(new WebPageRow(site, title, url, map[appId].AppName,
                 map[appId].ProcessName, seconds));
+        return list;
+    }
+
+    /// <summary>查询浏览器网页前台片段，供网页页绘制时间线。</summary>
+    public List<WebTimelineRow> QueryWebTimeline(DateTime fromUtc, DateTime toUtc)
+    {
+        var list = new List<WebTimelineRow>();
+        using var c = Open();
+        var map = LoadAppInfo(c);
+        using var cmd = c.CreateCommand();
+        cmd.CommandText = """
+            SELECT s.app_id, MAX(s.start_ts, $f), MIN(s.end_ts, $t),
+                   COALESCE(s.site, ''), COALESCE(s.title, ''), COALESCE(s.url, '')
+            FROM usage_segments s
+            WHERE s.kind = 'foreground'
+              AND s.end_ts > $f AND s.start_ts < $t
+              AND (COALESCE(s.site, '') <> '' OR COALESCE(s.title, '') <> '')
+            ORDER BY s.start_ts
+            """;
+        cmd.Parameters.AddWithValue("$f", ToIso(fromUtc));
+        cmd.Parameters.AddWithValue("$t", ToIso(toUtc));
+        using var r = cmd.ExecuteReader();
+        while (r.Read())
+        {
+            if (!map.TryGetValue(r.GetInt32(0), out var src)) continue;
+            var effective = ResolveEffectiveAppId(map, r.GetInt32(0));
+            if (!map.TryGetValue(effective, out var app) || src.Ignored != 0 || app.Ignored != 0 ||
+                !BrowserCatalog.IsBrowser(app.ProcessName)) continue;
+
+            var start = ParseIso(r.GetString(1));
+            var end = ParseIso(r.GetString(2));
+            if (end <= start) continue;
+            list.Add(new WebTimelineRow(start, end, r.GetString(3), r.GetString(4), r.GetString(5),
+                app.AppName, app.ProcessName));
+        }
         return list;
     }
 
@@ -1468,7 +1741,8 @@ public sealed class Database
     {
         using var c = Open();
         using var cmd = c.CreateCommand();
-        cmd.CommandText = "UPDATE apps SET ignored=$ig WHERE id=$id";
+        // ignored_manual：这是用户亲手设的，之后自动噪声忽略不再覆盖它
+        cmd.CommandText = "UPDATE apps SET ignored=$ig, ignored_manual=1 WHERE id=$id";
         cmd.Parameters.AddWithValue("$ig", ignored ? 1 : 0);
         cmd.Parameters.AddWithValue("$id", id);
         cmd.ExecuteNonQuery();

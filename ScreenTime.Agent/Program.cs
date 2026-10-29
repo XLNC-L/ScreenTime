@@ -24,14 +24,19 @@ internal static class Program
 
     private static Database _db = null!;
     private static WatcherService _watcher = null!;
+    private static HistoryImportService _historyImport = null!;
     private static TrayIcon? _tray;
     private static volatile bool _exit;
 
     [STAThread]
     private static int Main(string[] args)
     {
-        using var mutex = new Mutex(true, MutexName, out var createdNew);
-        if (!createdNew) return 0; // 已有采集器在跑，第二实例直接退出
+        var mutex = new Mutex(true, MutexName, out var createdNew);
+        if (!createdNew)
+        {
+            mutex.Dispose();
+            return 0; // 已有采集器在跑，第二实例直接退出
+        }
 
         try
         {
@@ -40,9 +45,47 @@ internal static class Program
         catch (Exception ex)
         {
             WriteError(ex);
+            // 先放锁再拉起新进程，否则新实例会被自己的单实例互斥挡掉
+            try { mutex.ReleaseMutex(); } catch { }
+            mutex.Dispose();
+            TryRestartSelf();
             return 1;
         }
+
+        mutex.Dispose();
         return 0;
+    }
+
+    /// <summary>
+    /// 顶层异常后尝试自恢复。UI 关闭期间没人看护采集器，
+    /// 一次未捕获异常就会让采集空窗到下次开机——这里补上。
+    /// 10 分钟内只重启一次，避免启动期崩溃（比如数据库损坏）造成无限重启。
+    /// </summary>
+    private static void TryRestartSelf()
+    {
+        try
+        {
+            var dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "ScreenTime");
+            Directory.CreateDirectory(dir);
+            var stamp = Path.Combine(dir, "agent-restart.stamp");
+            if (File.Exists(stamp) &&
+                DateTime.TryParse(File.ReadAllText(stamp), out var last) &&
+                (DateTime.Now - last).TotalMinutes < 10)
+            {
+                WriteLog("restart suppressed (last attempt within 10 min)");
+                return;
+            }
+            File.WriteAllText(stamp, DateTime.Now.ToString("O"));
+
+            var exe = Environment.ProcessPath;
+            if (string.IsNullOrEmpty(exe) || !File.Exists(exe)) return;
+            Process.Start(new ProcessStartInfo(exe) { UseShellExecute = true });
+            WriteLog("restarting self after fatal error");
+        }
+        catch (Exception ex)
+        {
+            WriteLog("restart failed: " + ex.Message);
+        }
     }
 
     private static void Run(string[] args)
@@ -63,6 +106,11 @@ internal static class Program
         // 设置热重载：UI 修改音频/用途/浏览器开关后写 settings_version，这里轮询并刷新
         var settingsTimer = new System.Threading.Timer(_ => CheckSettingsReload(),
             null, TimeSpan.FromSeconds(10), TimeSpan.FromSeconds(10));
+
+        // 浏览器历史回填：v1.2.0 起从 UI 进程搬到这里，UI 关掉也能继续补网页地址。
+        // 内部自带 30 分钟节拍与「回填开关」判断，关闭时自动跳过。
+        _historyImport = new HistoryImportService(_db);
+        _historyImport.Start();
 
         // UWP 图标回填 + 自启注册：都不挡采集启动
         _ = Task.Run(() =>
@@ -91,6 +139,7 @@ internal static class Program
 
         RunMessageLoop();
         try { settingsTimer.Dispose(); } catch { }
+        try { _historyImport.Dispose(); } catch { }
         try { _watcher.Dispose(); } catch { }
         try { _tray.Dispose(); } catch { }
         WriteLog("agent stopped");
@@ -108,6 +157,8 @@ internal static class Program
             {
                 _lastSettingsVersion = v;
                 _watcher.ReloadSettings();
+                // 设置变了让回填尽快跑一轮（打开「历史回填」开关后不用等半小时）
+                _historyImport?.Start();
             }
         }
         catch { }
@@ -159,11 +210,24 @@ internal static class Program
     /// <summary>
     /// 保证开机自启任务指向 Agent 自己（ONLOGON，无参数）。
     /// 已存在且指向当前 exe 则跳过；指向旧版 UI（--silent）则 /F 重建，自动迁移。
+    ///
+    /// 用户在设置页主动关闭自启后，UI 会写 <c>autostart_disabled=1</c>，
+    /// 这里必须尊重该标记，否则用户下次打开 UI（UI 会拉起 Agent）时任务会被重新建回来。
     /// </summary>
     private static void EnsureSelfAutoStart()
     {
         var exe = Environment.ProcessPath;
         if (string.IsNullOrEmpty(exe)) return;
+
+        try
+        {
+            if (_db.GetSetting("autostart_disabled", "0") == "1")
+            {
+                WriteLog("auto-start disabled by user, skip");
+                return;
+            }
+        }
+        catch { }
 
         var current = QueryTaskCommand();
         if (current != null && current.Equals(exe, StringComparison.OrdinalIgnoreCase)) return;
@@ -175,7 +239,48 @@ internal static class Program
             WriteLog("auto-start task registration failed");
     }
 
+    /// <summary>
+    /// 读取当前自启任务指向的 exe（无则返回 null）。
+    /// <para>
+    /// 优先直接读 <c>%SystemRoot%\System32\Tasks\&lt;任务名&gt;</c>：任务文件是 UTF-16 的 XML，
+    /// 而 <c>schtasks /Query /XML</c> 通过管道重定向读出来时编码并不可靠，解析失败就会
+    /// 让调用方误判成「任务不存在」，于是每次启动都 /F 重建一次。
+    /// schtasks 只作为读不到文件时的兜底。
+    /// </para>
+    /// </summary>
     private static string? QueryTaskCommand()
+    {
+        var fromFile = QueryTaskCommandFromFile();
+        if (fromFile != null) return fromFile;
+        return QueryTaskCommandFromSchtasks();
+    }
+
+    private static string? QueryTaskCommandFromFile()
+    {
+        try
+        {
+            var dir = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.System), "Tasks");
+            var path = Path.Combine(dir, TaskName);
+            if (!File.Exists(path)) return null;
+
+            var text = File.ReadAllText(path, System.Text.Encoding.Unicode);
+            var m = System.Text.RegularExpressions.Regex.Match(
+                text, "<Command>(.*?)</Command>",
+                System.Text.RegularExpressions.RegexOptions.Singleline);
+            if (!m.Success) return null;
+
+            // 任务文件里的 Command 带 /TR 的引号，剥掉再比
+            var value = m.Groups[1].Value.Trim().Trim('"');
+            return value.Length == 0 ? null : value;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static string? QueryTaskCommandFromSchtasks()
     {
         try
         {
@@ -192,7 +297,8 @@ internal static class Program
             if (!p.WaitForExit(5000)) return null;
             if (p.ExitCode != 0) return null;
             var doc = XDocument.Parse(output);
-            return doc.Descendants().FirstOrDefault(e => e.Name.LocalName == "Command")?.Value;
+            var command = doc.Descendants().FirstOrDefault(e => e.Name.LocalName == "Command")?.Value;
+            return command?.Trim().Trim('"');
         }
         catch
         {
