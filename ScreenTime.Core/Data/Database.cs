@@ -899,6 +899,78 @@ public sealed class Database
         cmd.ExecuteNonQuery();
     }
 
+    /// <summary>
+    /// 修补亮屏时间线：把「连续两个 display_on 之间没有 display_off」的悬空段收口。
+    ///
+    /// 关机、断电、任务管理器强杀时进程被直接终止，熄灭事件没机会写。
+    /// 连续两条 display_on 之间夹着的空档就会被当成「一直亮着」——
+    /// 实际踩到过：一天报 14 小时亮屏，中间 11.8 小时机器是关着的。
+    ///
+    /// 收口时间取该段内「最后一次有活动证据」的时刻（最后一条片段结束）。
+    /// 只有空档超过 <paramref name="minGap"/> 才补，避免正常秒级重启被切成碎片。
+    /// </summary>
+    /// <returns>补写的 display_off 条数。</returns>
+    public int RepairDisplaySpans(TimeSpan? minGap = null)
+    {
+        var gap = minGap ?? TimeSpan.FromMinutes(30);
+
+        var events = new List<(bool On, DateTime Ts)>();
+        using (var c = Open())
+        using (var cmd = c.CreateCommand())
+        {
+            cmd.CommandText = "SELECT type, ts FROM session_events " +
+                              "WHERE type IN ('display_on','display_off') ORDER BY ts";
+            using var r = cmd.ExecuteReader();
+            while (r.Read()) events.Add((r.GetString(0) == "display_on", ParseIso(r.GetString(1))));
+        }
+        if (events.Count == 0) return 0;
+
+        var repairs = new List<DateTime>();
+        DateTime? openAt = null;
+
+        foreach (var (on, ts) in events)
+        {
+            if (!on)
+            {
+                openAt = null;
+                continue;
+            }
+
+            if (openAt is { } start)
+            {
+                // 上一段没等到 off 就来了新的 on：上一段是悬空的
+                var end = LastActivityIn(start, ts);
+                if (ts - end >= gap) repairs.Add(end);
+            }
+            openAt = ts;
+        }
+
+        // 末尾还开着：距最后活动超过阈值就收口（进程已被杀掉，之后不可能有数据）
+        if (openAt is { } tail)
+        {
+            var now = DateTime.UtcNow;
+            var end = LastActivityIn(tail, now);
+            if (now - end >= gap) repairs.Add(end);
+        }
+
+        foreach (var at in repairs) AddSessionEventAt("display_off", at, "repaired");
+        return repairs.Count;
+    }
+
+    /// <summary>区间内最后一次有采集活动的时刻；没有则返回区间起点。</summary>
+    private DateTime LastActivityIn(DateTime fromUtc, DateTime toUtc)
+    {
+        using var c = Open();
+        using var cmd = c.CreateCommand();
+        cmd.CommandText = "SELECT MAX(end_ts) FROM usage_segments WHERE end_ts >= $f AND end_ts <= $t";
+        cmd.Parameters.AddWithValue("$f", ToIso(fromUtc));
+        cmd.Parameters.AddWithValue("$t", ToIso(toUtc));
+        var raw = cmd.ExecuteScalar() as string;
+        if (string.IsNullOrEmpty(raw)) return fromUtc;
+        var d = ParseIso(raw);
+        return d > fromUtc ? d : fromUtc;
+    }
+
     /// <summary>返回最近一次 boot 事件的 UTC 时间；没有则 null。</summary>
     public DateTime? GetLastBootTime()
     {

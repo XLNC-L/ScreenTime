@@ -126,6 +126,9 @@ public sealed class WatcherService : IDisposable
             }
             // 无论状态从哪来，都要记一条起始事件——否则亮屏时长没有起点，
             // 得等第一次「熄灭→点亮」才有数据
+            // 先修补悬空的亮屏段：关机/断电/强杀时熄灭事件来不及写，
+            // 连续两条 display_on 之间的大空档会被当成一直亮着，亮屏时长凭空多出几小时。
+            _db.RepairDisplaySpans();
             _db.AddSessionEvent(_display.IsOn ? "display_on" : "display_off");
         }
 
@@ -497,6 +500,9 @@ public sealed class WatcherService : IDisposable
         lock (_gate)
         {
             CloseAll();
+            // 主动退出时把亮屏段收口。不收的话下次启动只能靠 RepairDisplaySpans
+            // 去猜「上次活到什么时候」，退出时间点是已知的，没必要猜。
+            if (_display.IsOn) _db.AddSessionEvent("display_off", "exit");
             _db.AddSessionEvent("shutdown");
         }
         _timer.Dispose();
