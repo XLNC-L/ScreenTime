@@ -1,0 +1,43 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
+    <TargetPlatformMinVersion>10.0.17763.0</TargetPlatformMinVersion>
+    <RootNamespace>ScreenTime.Agent</RootNamespace>
+    <AssemblyName>ScreenTime.Agent</AssemblyName>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <Platforms>x64</Platforms>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <RuntimeIdentifiers>win-x64</RuntimeIdentifiers>
+    <ApplicationIcon>..\ScreenTime.WinUI\Assets\app.ico</ApplicationIcon>
+    <Version>1.2.0</Version>
+    <PublishReadyToRun>true</PublishReadyToRun>
+    <PublishReadyToRunShowWarnings>true</PublishReadyToRunShowWarnings>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\ScreenTime.Core\ScreenTime.Core.csproj" />
+    <ProjectReference Include="..\ScreenTime.Collect\ScreenTime.Collect.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- 与 UI 进程共用同一份图标资源（Link 方式，不复制文件） -->
+    <Content Include="..\ScreenTime.WinUI\Assets\app.ico" Link="Assets\app.ico" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <!--
+    publish 时 NuGet 会把 Microsoft.Win32.SystemEvents 的跨平台存根
+    （lib/net8.0，调用即抛 PlatformNotSupportedException）复制到发布根目录，
+    导致发布版在监听锁屏事件时崩溃。发布后用 Windows 实现覆盖。
+  -->
+  <Target Name="FixSystemEventsRuntimeAsset" AfterTargets="Publish">
+    <Copy
+        SourceFiles="$(NuGetPackageRoot)microsoft.win32.systemevents\9.0.1\runtimes\win\lib\net8.0\Microsoft.Win32.SystemEvents.dll"
+        DestinationFolder="$(PublishDir)"
+        SkipUnchangedFiles="true" />
+  </Target>
+
+</Project>
