@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.IO.Pipes;
 using System.Runtime.InteropServices;
 using System.Threading;
 using System.Xml.Linq;
@@ -21,6 +22,9 @@ internal static class Program
 {
     private const string MutexName = "ScreenTime_Agent_Mutex";
     private const string TaskName = "ScreenTime";
+
+    /// <summary>UI 进程的唤起通道（与 App.ActivatePipeName 保持一致）。</summary>
+    private const string ActivatePipeName = "ScreenTime_Activate";
 
     private static Database _db = null!;
     private static WatcherService _watcher = null!;
@@ -185,20 +189,107 @@ internal static class Program
         }
     }
 
-    /// <summary>托盘「打开统计」：启动 UI 进程（UI 单实例会自动唤起已有窗口）。</summary>
+    /// <summary>
+    /// 托盘「打开统计」。
+    ///
+    /// 有 UI 在跑时**直接走管道唤醒**，不再「启动第二个实例让它自己发现单实例再转发」——
+    /// 那条路要多创建一整个进程（约 200MB 虚拟地址空间、一两百毫秒），
+    /// 而且实测偶发失败：`Process.Start` 明明起了进程（pid 有返回），
+    /// 信号却没到达 UI，表现就是「点托盘毫无反应」。
+    /// 只有确实没有 UI 时才去启动新进程。
+    /// </summary>
     private static void OpenMainWindow()
     {
         try
         {
+            var uiRunning = Process.GetProcessesByName("ScreenTime").Length > 0;
+
+            if (uiRunning)
+            {
+                // 用户刚点了托盘，此刻前台权限在 Agent 手里，先转交给 UI。
+                GrantForegroundToRunningUi();
+
+                if (SignalRunningUi())
+                {
+                    WriteLog("tray: signalled running ui via pipe");
+                    return;
+                }
+                WriteLog("tray: pipe signal failed, falling back to Process.Start");
+            }
+
             var uiExe = Path.Combine(AppContext.BaseDirectory, "ScreenTime.exe");
             if (!File.Exists(uiExe))
             {
                 WriteLog("UI exe not found next to agent: " + uiExe);
                 return;
             }
-            Process.Start(new ProcessStartInfo(uiExe) { UseShellExecute = true });
+
+            var started = Process.Start(new ProcessStartInfo(uiExe) { UseShellExecute = true });
+            WriteLog(started is null
+                ? "tray: Process.Start 返回 null（没有启动任何进程）"
+                : $"tray: started ui pid={started.Id}");
         }
         catch (Exception ex) { WriteError(ex); }
+    }
+
+    /// <summary>通过命名管道叫醒正在运行的 UI（写一个字节即触发它置顶）。</summary>
+    private static bool SignalRunningUi()
+    {
+        try
+        {
+            using var client = new NamedPipeClientStream(".", ActivatePipeName, PipeDirection.Out);
+            client.Connect(500);
+            client.WriteByte(1);
+            client.Flush();
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// 把本进程（当前前台）的「可设前台」权限转交给已经在跑的 UI 进程，
+    /// 并直接替它把窗口顶到最前。
+    ///
+    /// 为什么要「直接代为置顶」而不是只转交权限：转交是让 UI 进程自己去抢，
+    /// 中间隔着管道 + DispatcherQueue 排队，一次 SetForegroundWindow 的时效很容易被消耗掉；
+    /// Agent 刚被点击，前台权限确定在自己手里，直接对 UI 的 HWND 调一次最稳。
+    /// 没有运行中的 UI 时什么也不做——那种情况是新进程启动，走 UI 侧的 ForceToFront。
+    /// </summary>
+    private static void GrantForegroundToRunningUi()
+    {
+        try
+        {
+            foreach (var p in Process.GetProcessesByName("ScreenTime"))
+            {
+                try
+                {
+                    if (AllowSetForegroundWindow(p.Id))
+                        WriteLog($"tray: granted foreground to ui pid={p.Id}");
+
+                    var hwnd = p.MainWindowHandle;
+                    if (hwnd == IntPtr.Zero) continue;
+
+                    if (IsIconic(hwnd)) ShowWindow(hwnd, SW_RESTORE);
+
+                    // 与 UI 侧同一套思路：改 Z 序不需要前台权限，抢焦点才需要。
+                    // 用 HWND_TOP（不是 TOPMOST）：只抬到普通窗口层的顶部，不留置顶属性。
+                    // 万一管道信号没送到，这一步至少能把窗口顶上来。
+                    SetWindowPos(hwnd, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+
+                    if (SetForegroundWindow(hwnd))
+                        WriteLog($"tray: foregrounded ui pid={p.Id} hwnd=0x{hwnd.ToInt64():X}");
+                    else
+                        // 跨进程抢焦点常被前台锁拒绝，这不算失败：Z 序已经翻转过，窗口在上面
+                        WriteLog($"tray: direct SetForegroundWindow declined pid={p.Id}（已翻转 Z 序）");
+                }
+                catch { }
+                finally { p.Dispose(); }
+            }
+        }
+        catch { }
     }
 
     private static void ExitAgent()
@@ -362,4 +453,27 @@ internal static class Program
 
     [DllImport("user32.dll")]
     private static extern IntPtr DispatchMessageW(ref Msg lpMsg);
+
+    /// <summary>把「可设前台」权限交给指定进程（调用方必须是当前前台进程）。</summary>
+    [DllImport("user32.dll")]
+    private static extern bool AllowSetForegroundWindow(int dwProcessId);
+
+    [DllImport("user32.dll")]
+    private static extern bool SetForegroundWindow(IntPtr hWnd);
+
+    [DllImport("user32.dll")]
+    private static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+
+    [DllImport("user32.dll")]
+    private static extern bool IsIconic(IntPtr hWnd);
+
+    [DllImport("user32.dll")]
+    private static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter,
+        int X, int Y, int cx, int cy, uint uFlags);
+
+    private const int SW_RESTORE = 9;
+    private static readonly IntPtr HWND_TOP = 0;
+    private const uint SWP_NOSIZE = 0x0001;
+    private const uint SWP_NOMOVE = 0x0002;
+    private const uint SWP_NOACTIVATE = 0x0010;
 }

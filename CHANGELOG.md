@@ -4,6 +4,51 @@
 
 ---
 
+## v1.2.2（2026-10-30）托盘置顶修复 + 图标落盘
+
+**这一版同样没有新功能，修的是两个「日常用着难受」的问题。**
+两者都经过实机验证，不是「看着像好了」。
+
+- **托盘点击不会把窗口提到最前**。桌面已经有面板、但被别的窗口盖住时，点托盘毫无反应。
+  根因是 `Window.Activate()` 内部只做一次 `SetForegroundWindow`，而 Windows 前台锁
+  （Foreground Lock）会拒绝非前台进程抢焦点——且**只返回 false，不抛异常**，于是静默失败。
+  从托盘唤起正好踩中：真正收到点击的是 Agent 进程，UI 属于「被第三方启动的程序」。
+
+  **关键认知：改变 Z 序（视觉层级）不需要前台权限，只有抢键盘焦点才需要。**
+  第一版只做了 `AllowSetForegroundWindow` + `SetForegroundWindow` + `AttachThreadInput`，
+  实测仍然不置顶——因为前台窗口可能属于**提权进程**
+  （PowerToys / Process Lasso 都以管理员运行），非提权进程受 UIPI 限制，
+  既不能 `AttachThreadInput` 也不能抢焦点。最终方案：
+
+  1. `Native/WindowActivation.cs` 里先做一次 **`SetWindowPos(HWND_TOP)`**，
+     把窗口抬到「普通窗口层」的最上层（不受前台锁约束），再去争取焦点；
+     焦点拿不到也不影响「已经置顶」。
+     用 `HWND_TOP` 而不是 `HWND_TOPMOST`：后者会把 `WS_EX_TOPMOST` 留在窗口上，
+     一旦随后的 `HWND_NOTOPMOST` 失败，窗口就永久钉在所有窗口之上。
+  2. Agent 在 `Process.Start` 之前调 `AllowSetForegroundWindow(pid)` 转交前台权限，
+     并对 UI 的 HWND 也做一次 Z 序翻转（管道万一没通也能顶上来）。
+  3. **托盘点击不再靠「启动第二个实例」转发信号**。原实现是
+     `Process.Start(ScreenTime.exe)` → 新实例发现单实例 → 通过命名管道唤醒旧实例，
+     多一层进程创建，且实测偶发失败：`Process.Start` 明明返回了 pid，
+     信号却没到达 UI，表现就是「点托盘毫无反应」（一次连续 5 次都失败）。
+     现在 Agent 直接连管道写一个字节，只有确实没有 UI 在跑时才启动新进程。
+     管道服务端实例数也从 1 提到 4，避免客户端撞上「所有实例都在忙」。
+  4. **新建窗口路径也补了置顶**：`OnLaunched` 和 `ShowMainWindow` 的新窗口分支，
+     都排到 DispatcherQueue 的 Low 优先级再调 `ForceToFront()`，
+     避免对还没渲染的 HWND 调 `SetWindowPos`。
+  5. 全程写 `%APPDATA%\ScreenTime\activate.log`（`restore=` / `raise=` / `foreground=`），
+     下次再出问题能直接看出卡在哪一步。
+- **应用图标不落盘，卸载后历史里变空白**。图标一直是运行时从 exe 资源现取、只缓存内存，
+  进程重启即失效；软件卸载/换目录后历史排行只剩一排空白行（例：已卸载的
+  `Ghostrunner-Win64-Shipping`）。
+  现在提取成功即写 `%APPDATA%\ScreenTime\icons\<SHA256前20位>.png`，
+  读取时先查磁盘再现取。`BytesCache` 的键也从「解析后的 exe 路径」
+  统一成 `KeyFor()` 的应用标识，避免同一应用因路径漂移重复提取。
+  实测 100 个应用共 **2.1 MB**（平均约 21 KB/个，256px PNG，装几万个应用也才几百 MB）。
+  注意：**只对以后出现的图标生效**，此前已经丢失的图标无法补回（源 exe 已不存在）。
+
+---
+
 ## v1.2.1（2026-10-30）双进程接缝修复 + 收件箱查询提速
 
 **这一版没有新功能，全部是 v1.2.0 双进程拆分留下的接缝问题。**

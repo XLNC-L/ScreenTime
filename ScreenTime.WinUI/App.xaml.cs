@@ -105,9 +105,9 @@ public partial class App : Application
                 {
                     using var server = security is null
                         ? new NamedPipeServerStream(ActivatePipeName, PipeDirection.In,
-                            1, PipeTransmissionMode.Byte, PipeOptions.None)
+                            4, PipeTransmissionMode.Byte, PipeOptions.None)
                         : NamedPipeServerStreamAcl.Create(ActivatePipeName, PipeDirection.In,
-                            1, PipeTransmissionMode.Byte, PipeOptions.None, 0, 0, security);
+                            4, PipeTransmissionMode.Byte, PipeOptions.None, 0, 0, security);
 
                     server.WaitForConnection();
                     try { server.ReadByte(); } catch { }
@@ -159,6 +159,10 @@ public partial class App : Application
 
         _mainWindow = new MainWindow();
         _mainWindow.Activate();
+        // 从托盘拉起时本进程不是前台进程，系统不保证窗口开在最前面（会被已最大化的窗口盖住）。
+        // 排到 Low 优先级，等首帧渲染完再顶，避免对还没显示的 HWND 调 SetWindowPos。
+        _mainWindow.DispatcherQueue.TryEnqueue(
+            Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, _mainWindow.ForceToFront);
     }
 
     /// <summary>确保采集器进程在跑（Agent 常驻托盘负责采集；UI 显示完退出不影响采集）。</summary>
@@ -190,6 +194,10 @@ public partial class App : Application
         {
             _mainWindow = new MainWindow();
             _mainWindow.Activate();
+            // 新窗口是被 Agent（非前台进程）拉起来的，系统不保证它开在最前面，
+            // 这里显式顶一次，和「已存在窗口」路径保持一致。
+            _mainWindow.DispatcherQueue.TryEnqueue(
+                Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, _mainWindow.ForceToFront);
         }
         else
         {

@@ -87,35 +87,51 @@ public static class AppIconService
     /// </summary>
     public static byte[]? GetIconBytes(string exePath, string? processName, string? iconSource = null)
     {
+        var key = KeyFor(exePath, processName, iconSource);
+        if (key.Length == 0) return null;
+
+        if (BytesCache.TryGetValue(key, out var cached)) return cached;
+
+        // 落盘缓存优先：软件卸载、exe 挪目录后仍然能显示图标。
+        // 之前只在内存里缓存，进程一重启就没了，历史排行会变成一排空白行。
+        var fromDisk = ReadDiskCache(key);
+        if (fromDisk != null)
+        {
+            CapBytesCache();
+            BytesCache[key] = fromDisk;
+            return fromDisk;
+        }
+
+        var result = ExtractIconBytes(exePath, processName, iconSource);
+        if (result != null) WriteDiskCache(key, result);
+
+        CapBytesCache();
+        BytesCache[key] = result;
+        return result;
+    }
+
+    /// <summary>真正去「取」图标的动作：显式图标源 → 可执行文件 → 运行中进程。</summary>
+    private static byte[]? ExtractIconBytes(string exePath, string? processName, string? iconSource)
+    {
         if (!string.IsNullOrWhiteSpace(iconSource) && File.Exists(iconSource))
         {
-            if (BytesCache.TryGetValue(iconSource, out var cachedSource)) return cachedSource;
             var bytes = LoadPngBytes(iconSource);
-            CapBytesCache();
-            BytesCache[iconSource] = bytes;
             if (bytes != null) return bytes;
         }
 
         var path = ResolvePath(exePath, processName);
         if (string.IsNullOrEmpty(path)) return null;
-        if (BytesCache.TryGetValue(path, out var cached)) return cached;
 
-        byte[]? result = null;
         try
         {
             if (File.Exists(path))
-            {
-                result = ExtractHighResIcon(path) ?? ExtractAssociatedIconBytes(path);
-            }
+                return ExtractHighResIcon(path) ?? ExtractAssociatedIconBytes(path);
         }
         catch
         {
-            result = null;
+            // 损坏的 exe、权限不足等：按无图标处理
         }
-
-        CapBytesCache();
-        BytesCache[path] = result;
-        return result;
+        return null;
     }
 
     /// <summary>UI 线程调用：PNG 字节转 BitmapImage，解码尺寸限 <see cref="DecodePx"/>。</summary>
@@ -161,6 +177,60 @@ public static class AppIconService
     private static void CapUiCache()
     {
         if (UiCache.Count >= MaxCacheEntries) UiCache.Clear();
+    }
+
+    /// <summary>
+    /// 图标落盘缓存目录。<c>%APPDATA%\ScreenTime\icons\</c>
+    ///
+    /// 图标本身是运行时从 exe 资源里现取的，只存内存的话进程一重启就没了；
+    /// 软件一旦卸载（exe 消失），历史排行里的图标就永久变成空白。
+    /// 这里把提取结果按「应用标识的哈希」存成 PNG，之后即使 exe 不在也能显示。
+    /// 体积实测约 21 KB/个（256px PNG），100 个应用 2.1 MB，可忽略。
+    /// </summary>
+    private static readonly string DiskCacheDir = Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "ScreenTime", "icons");
+
+    /// <summary>读落盘图标；未命中或文件损坏返回 null。</summary>
+    private static byte[]? ReadDiskCache(string key)
+    {
+        try
+        {
+            var path = DiskCachePath(key);
+            if (!File.Exists(path)) return null;
+            var bytes = File.ReadAllBytes(path);
+            return bytes.Length > 0 ? bytes : null;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    /// <summary>写落盘图标。先写临时文件再改名，避免并发读到写了一半的 PNG。</summary>
+    private static void WriteDiskCache(string key, byte[] bytes)
+    {
+        try
+        {
+            var path = DiskCachePath(key);
+            if (File.Exists(path)) return;
+
+            Directory.CreateDirectory(DiskCacheDir);
+            var tmp = path + ".tmp";
+            File.WriteAllBytes(tmp, bytes);
+            File.Move(tmp, path, overwrite: true);
+        }
+        catch
+        {
+            // 磁盘满、目录被占等：图标只是显示层，失败不影响统计
+        }
+    }
+
+    /// <summary>路径 → 固定文件名（SHA-256 前 20 位十六进制），避免非法字符与长度问题。</summary>
+    private static string DiskCachePath(string key)
+    {
+        var hash = System.Security.Cryptography.SHA256.HashData(
+            System.Text.Encoding.UTF8.GetBytes(key.ToLowerInvariant()));
+        return Path.Combine(DiskCacheDir, Convert.ToHexString(hash, 0, 10).ToLowerInvariant() + ".png");
     }
 
     /// <summary>直接读取一张图片文件（UWP 图标已由 UwpAppService 导出为 PNG）。</summary>

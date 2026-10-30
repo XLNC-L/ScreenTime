@@ -155,9 +155,21 @@ public partial class MainWindow : Window
 
     public void ShowAndActivate()
     {
+        // Show() 只负责「从隐藏变成可见」；Activate() 内部是一次 SetForegroundWindow，
+        // 窗口已经可见但被别的窗口盖住时会被前台锁拒绝（返回 false、不报错），
+        // 表现就是「桌面已经有面板了，点托盘还是压在最下面」。
         _appWindow.Show();
         Activate();
+        ScreenTime.Native.WindowActivation.ForceForeground(WindowNative.GetWindowHandle(this));
     }
+
+    /// <summary>
+    /// 把窗口顶到 Z 序最前。与 <see cref="ShowAndActivate"/> 的区别是不碰显示状态，
+    /// 供「新建窗口」路径使用——新进程的窗口是 Agent 拉起来的，不属于前台进程，
+    /// 系统同样可能让它开在别的窗口后面。
+    /// </summary>
+    public void ForceToFront() =>
+        ScreenTime.Native.WindowActivation.ForceForeground(WindowNative.GetWindowHandle(this));
 
     /// <summary>下钻：切到历史页并按其分类筛选应用排行。</summary>
     public void DrillToCategory(string category)
