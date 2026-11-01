@@ -2310,19 +2310,14 @@ public sealed class Database
 
             using (var cmd = c.CreateCommand())
             {
-                cmd.CommandText = """
-                    SELECT COALESCE(SUM(CASE WHEN type='display_on' THEN 1 ELSE 0 END), 0),
-                           COALESCE(SUM(CASE WHEN type='display_off' THEN 1 ELSE 0 END), 0)
-                    FROM session_events
-                    WHERE ts > $f AND type IN ('display_on','display_off')
-                    """;
-                cmd.Parameters.AddWithValue("$f", ToIso(DateTime.UtcNow.AddDays(-7)));
-                using var r = cmd.ExecuteReader();
-                if (r.Read())
+                // 采集中断：心跳正常但很久没有新片段。文案自带前提，避免「电脑根本没开」时误判
+                cmd.CommandText = "SELECT COALESCE(MAX(end_ts), '') FROM usage_segments";
+                var lastRaw = cmd.ExecuteScalar() as string;
+                if (!string.IsNullOrEmpty(lastRaw))
                 {
-                    var diff = r.GetInt32(0) - r.GetInt32(1);
-                    if (diff > 1)
-                        warnings.Add($"最近 7 天有 {diff} 个亮屏事件未配对（可能关机/强退时漏写熄灭事件）");
+                    var hours = (DateTime.UtcNow - ParseIso(lastRaw)).TotalHours;
+                    if (hours >= 24)
+                        warnings.Add($"已经 {hours:0} 小时没有新的使用记录——期间如果用电脑，说明采集可能中断过");
                 }
             }
         }
