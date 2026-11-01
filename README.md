@@ -11,9 +11,14 @@ Windows 本地屏幕时间统计工具。常驻托盘，后台记录前台窗口
 
 从 [Releases](../../releases) 下载 `ScreenTime-Setup-x.y.z.exe`，双击安装。
 
-- **装到用户目录**（`%LocalAppData%\Programs\ScreenTime`），**全程不需要管理员权限、不弹 UAC**
-- 需要 **.NET 8 Runtime（x64）**；安装向导会检测，缺了会给出下载链接
-- 安装包约 22 MB（压缩后），装完约 95 MB / 281 个文件
+- 安装向导是**简体中文**，先选「仅为我安装」还是「为所有用户安装」：
+  - **仅为我安装**（默认）：装到 `%LocalAppData%\Programs\ScreenTime`，**不需要管理员权限、不弹 UAC**；
+  - **为所有用户安装**：装到 `Program Files\ScreenTime`，需要 UAC 授权。
+- **安装目录可以改**：向导里「选择目标位置」可直接改成 D 盘等任意路径，升级时沿用上次的目录。
+- Release 里提供的是**框架依赖**包（约 25 MB），需要 **.NET 8 Desktop Runtime（x64）**；
+  安装向导会检测，缺了会给出下载链接。用 `/DSelfContained=1` 自己打的**自包含**包（约 51.5 MB）
+  自带运行时，目标机什么都不用装。
+- 装完体积：框架依赖约 95 MB / 280 文件，自包含约 206 MB / 304 文件。
 
 > 未做代码签名，首次运行 Windows 可能提示"未知发布者"，点「更多信息 → 仍要运行」即可。
 > 可对照 Release 里的 `SHA256SUMS.txt` 校验下载的文件。
@@ -23,7 +28,7 @@ Windows 本地屏幕时间统计工具。常驻托盘，后台记录前台窗口
 设置 → 应用 → ScreenTime → 卸载（或开始菜单里右键卸载）。卸载时会弹窗说明，
 可勾选是否**同时删除使用数据**（`%AppData%\ScreenTime`，默认保留）。
 
-⚠️ 卸载前请先在托盘图标上右键退出，否则程序文件被占用会导致卸载失败。
+⚠️ 卸载/覆盖升级时安装器会自动结束正在运行的界面与采集器，不需要先手动退出托盘。
 
 ## 从源码构建
 
@@ -50,7 +55,7 @@ dotnet publish ScreenTime.Agent\ScreenTime.Agent.csproj -c Release -r win-x64 ^
 | 形态 | 参数 | 体积 | 目标机要求 |
 |---|---|---|---|
 | 框架依赖 | `--self-contained false` | 约 95 MB / 280 文件 | 需装 .NET 8 Desktop Runtime |
-| 自包含 | `--self-contained true` | 约 210 MB / 380 文件 | 无需任何运行时，解压即用 |
+| 自包含 | `--self-contained true` | 约 206 MB / 304 文件 | 无需任何运行时，解压即用 |
 
 > `WindowsPackageType=None`（非 MSIX）下 `dotnet publish` **不会自动复制 `.xbf`**，
 > 少了它发布版会直接启动失败。项目里已有 `CopyXbfToPublishDir` 目标自动补齐，

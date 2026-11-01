@@ -46,6 +46,20 @@ jobs:
           -o ScreenTime-WinUI
           -p:Version=${{ steps.ver.outputs.version }}
 
+      - name: 精简发布产物
+        shell: pwsh
+        run: |
+          # 与 tools/publish.ps1 的 Remove-PublishExtras 保持一致：
+          # 去调试符号、符号读取器，只留简中/繁中/英文的 WinUI 资源。
+          # 注意 Microsoft.UI.Xaml.Phone.dll 是 WinUI 启动硬依赖，不能删。
+          Get-ChildItem ScreenTime-WinUI -Recurse -File -Filter *.pdb | Remove-Item -Force -ErrorAction SilentlyContinue
+          Remove-Item ScreenTime-WinUI\Microsoft.DiaSymReader.Native.amd64.dll -Force -ErrorAction SilentlyContinue
+          $keep = @('zh-CN', 'zh-TW', 'en-us', 'en-US', 'en-GB')
+          Get-ChildItem ScreenTime-WinUI -Directory |
+            Where-Object { $_.Name -cmatch '^[A-Za-z]{2,3}-[A-Za-z]{2,4}(-[A-Za-z]{2,})?$' -and $_.Name -cnotin $keep } |
+            Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+          "文件数: $((Get-ChildItem ScreenTime-WinUI -Recurse -File).Count)"
+
       - name: 安装 Inno Setup
         run: choco install innosetup --no-progress -y
 

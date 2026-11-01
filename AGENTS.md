@@ -22,7 +22,7 @@ ScreenTime 是一个 Windows 屏幕使用时间统计工具，**WinUI 3 + 双进
 
 ```bat
 build.cmd                                     :: 编译 UI + Agent 并 publish 到 .\ScreenTime-WinUI\
-powershell -File tools\publish.ps1 -Deploy     :: 自包含发布并镜像到 D:\ScreenTime-v1.2.0-win-x64
+powershell -File tools\publish.ps1 -Deploy     :: 自包含发布并镜像到 D:\ScreenTime
 dotnet build ScreenTime.sln -c Release        :: 只编译
 dotnet test ScreenTime.Tests\ScreenTime.Tests.csproj -c Release
 "%LOCALAPPDATA%\Programs\Inno Setup 6\ISCC.exe" /DAppVersion=x.y.z /DSelfContained=1 installer\ScreenTime.iss
@@ -30,10 +30,11 @@ dotnet test ScreenTime.Tests\ScreenTime.Tests.csproj -c Release
 
 > 发布必须同时 publish **UI 和 Agent 两个进程到同一目录**，否则托盘/采集会缺文件。
 >
-> `build.cmd` 是**框架依赖**（`--self-contained false`），而运行目录 `D:\ScreenTime-v1.2.0-win-x64`
+> `build.cmd` 是**框架依赖**（`--self-contained false`），而运行目录 `D:\ScreenTime`
 > 是**自包含**（自带 .NET 8 运行时）。同步运行目录请用 `tools\publish.ps1`，
 > 它会用 `--self-contained true` 发布、校验 7 个 `.xbf`、镜像时排除 `.workbuddy-ai`，
-> 并自动恢复被 `-r win-x64` 还原改脏的 `packages.lock.json`。
+> 自动恢复被 `-r win-x64` 还原改脏的 `packages.lock.json`，并执行 `Remove-PublishExtras`
+> 精简产物（删 pdb / DiaSymReader / 多余语言资源，473 → 304 文件）。
 
 ## 3. 硬规矩（违反这些等于制造事故）
 
@@ -41,9 +42,15 @@ dotnet test ScreenTime.Tests\ScreenTime.Tests.csproj -c Release
    历史教训：2026-10-29 一晚产生了 9 份 4.3 GB 的目录副本，全部是 git 里已有的状态。
 2. **不要手改 `bin/`、`obj/`、`dist/`、`ScreenTime-WinUI/`、`qa/`。** 都是构建/本地产物，已在 .gitignore。
 3. **不要提交** `*.zip`、`*.db`、`*.log`、安装包。
-4. **不要在 `D:\ScreenTime-v1.2.0-win-x64` 里改代码。** 那是正在运行的发布产物，只读。
+4. **不要在 `D:\ScreenTime` 里改代码。** 那是正在运行的发布产物，只读。
 5. **版本号在 3 个 csproj 里各写了一份**（`ScreenTime.WinUI`、`ScreenTime.Agent`、`ScreenTime.Collect` 的 `<Version>`），改版本必须三处同步。
 6. 依赖用 `packages.lock.json` 锁定，改了 PackageReference 记得把锁文件一起提交。
+7. **安装器界面文案靠 `installer\languages\ChineseSimplified.isl`**（Inno 官方包不含中文）。
+   不要改回 `compiler:Default.isl`，那会让向导变回英文。
+8. **不要删 `Microsoft.UI.Xaml.Phone.dll`**：名字像手机专用，实际是 WinUI 启动期硬依赖，
+   删掉后界面直接起不来（已实测）。发布精简只允许删 pdb、DiaSymReader、多余语言目录。
+9. 安装器新增了「仅为我 / 为所有用户」选择（`PrivilegesRequiredOverridesAllowed=dialog`），
+   静默安装必须带 `/CURRENTUSER` 或 `/ALLUSERS`，否则会卡在这个对话框。
 
 ## 4. 收尾动作（每次会话结束前）
 

@@ -9,7 +9,7 @@
 
 param(
     [string]$Repo = "",
-    [string]$BuildDir = "D:\ScreenTime-v1.2.0-win-x64"
+    [string]$BuildDir = "D:\ScreenTime"
 )
 
 if ([string]::IsNullOrWhiteSpace($Repo)) {

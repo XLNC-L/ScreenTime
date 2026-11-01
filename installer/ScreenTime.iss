@@ -34,12 +34,16 @@ AppPublisher={#AppPublisher}
 AppSupportURL={#RepoUrl}
 AppUpdatesURL={#RepoUrl}/releases
 
-; 装到用户目录：全程不需要管理员权限、不弹 UAC
-DefaultDirName={localappdata}\Programs\{#AppName}
+; 安装位置：默认「仅为我」时落在 {localappdata}\Programs\ScreenTime（不需要管理员权限、不弹 UAC）；
+; 用户在权限对话框里选「为所有用户安装」时，{autopf} 会变成 Program Files（这时才需要 UAC）。
+; 无论哪种模式，目录页都显示出来，用户可以改到 D 盘等任意位置。
+DefaultDirName={autopf}\{#AppName}
 DefaultGroupName={#AppName}
+DisableDirPage=no
+UsePreviousAppDir=yes
 DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
-PrivilegesRequiredOverridesAllowed=
+PrivilegesRequiredOverridesAllowed=dialog
 
 ; 仅支持 64 位
 ArchitecturesAllowed=x64compatible
@@ -61,7 +65,9 @@ CloseApplications=yes
 RestartApplications=no
 
 [Languages]
-Name: "chinese"; MessagesFile: "compiler:Default.isl"
+; Inno Setup 官方安装包不含简体中文，中文语言文件随仓库放在 installer\languages\ 下。
+; 只声明中文一种语言，安装向导就不会先弹「选择语言」页，直接进中文界面。
+Name: "chinesesimplified"; MessagesFile: "languages\ChineseSimplified.isl"
 
 [Tasks]
 Name: "desktopicon"; Description: "创建桌面快捷方式"; GroupDescription: "附加任务："; Flags: unchecked
