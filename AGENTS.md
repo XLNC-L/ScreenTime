@@ -22,12 +22,18 @@ ScreenTime 是一个 Windows 屏幕使用时间统计工具，**WinUI 3 + 双进
 
 ```bat
 build.cmd                                     :: 编译 UI + Agent 并 publish 到 .\ScreenTime-WinUI\
+powershell -File tools\publish.ps1 -Deploy     :: 自包含发布并镜像到 D:\ScreenTime-v1.2.0-win-x64
 dotnet build ScreenTime.sln -c Release        :: 只编译
 dotnet test ScreenTime.Tests\ScreenTime.Tests.csproj -c Release
-ISCC.exe /DAppVersion=x.y.z installer\ScreenTime.iss   :: 打安装包（需 Inno Setup 6.3+）
+"%LOCALAPPDATA%\Programs\Inno Setup 6\ISCC.exe" /DAppVersion=x.y.z installer\ScreenTime.iss
 ```
 
 > 发布必须同时 publish **UI 和 Agent 两个进程到同一目录**，否则托盘/采集会缺文件。
+>
+> `build.cmd` 是**框架依赖**（`--self-contained false`），而运行目录 `D:\ScreenTime-v1.2.0-win-x64`
+> 是**自包含**（自带 .NET 8 运行时）。同步运行目录请用 `tools\publish.ps1`，
+> 它会用 `--self-contained true` 发布、校验 7 个 `.xbf`、镜像时排除 `.workbuddy-ai`，
+> 并自动恢复被 `-r win-x64` 还原改脏的 `packages.lock.json`。
 
 ## 3. 硬规矩（违反这些等于制造事故）
 
