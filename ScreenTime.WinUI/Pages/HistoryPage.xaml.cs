@@ -319,11 +319,11 @@ public partial class HistoryPage : Page
 
         BindPurpose(snapshot.Purposes);
         BindReportExtras(snapshot.DayTotals, snapshot.HourSeconds, days, snapshot.TopCategory);
-        BindInsights(snapshot);
+        BindInsights(snapshot, days);
     }
 
     /// <summary>洞察区：与上一周期的对比、最长连续使用、窗口切换频率。数据已在后台查好。</summary>
-    private void BindInsights(Snapshot s)
+    private void BindInsights(Snapshot s, int days)
     {
         var top = s.Apps.OrderByDescending(a => a.TotalSeconds).FirstOrDefault()?.AppName ?? "无";
 
@@ -346,13 +346,11 @@ public partial class HistoryPage : Page
             : $"{s.Longest.AppName} · {StatsService.FormatDuration(s.Longest.Seconds)}" +
               $"（{s.Longest.StartUtc.ToLocalTime():MM-dd HH:mm} 开始）";
 
-        var activeHours = s.TotalSeconds / 3600.0;
+        // 日均比「每小时」更稳：区间跨度大时，逐小时的小数会被四舍五入成 0，看起来像没数据
         SwitchText.Text = s.SwitchTotal <= 0
             ? "还没有切换记录（从 v1.3.2 开始统计）。"
-            : activeHours < 0.1
-                ? $"本区间共 {s.SwitchTotal} 次。"
-                : $"平均每小时 {s.SwitchTotal / activeHours:0} 次（共 {s.SwitchTotal} 次）。" +
-                  "频繁切换只是参考，不代表效率低。";
+            : $"共 {s.SwitchTotal} 次，日均 {s.SwitchTotal / Math.Max(days, 1):0.0} 次。" +
+              "频繁切换只是参考，不代表效率低。";
     }
 
     private void RetryBtn_Click(object sender, RoutedEventArgs e) => RequestQuery();
