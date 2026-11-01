@@ -50,6 +50,8 @@ public partial class MainWindow : Window
         _purposePollTimer.Start();
 
         // 初始导航（支持 --page=xxx 直达指定页面）
+        // 先应用「网页」入口可见性：开关关着时 --page=web 也要落到历史页
+        RefreshBrowserNav();
         NavigationViewItem initial = (NavigationViewItem)Nav.MenuItems[0];
         var pageArg = Environment.GetCommandLineArgs().FirstOrDefault(a => a.StartsWith("--page="));
         if (pageArg != null)
@@ -59,6 +61,8 @@ public partial class MainWindow : Window
             // 旧参数继续可用，统一落到历史页
             if (wanted.Equals("reports", StringComparison.OrdinalIgnoreCase) ||
                 wanted.Equals("apps", StringComparison.OrdinalIgnoreCase))
+                wanted = "history";
+            if (wanted.Equals("web", StringComparison.OrdinalIgnoreCase) && !_browserNavEnabled)
                 wanted = "history";
             foreach (var mi in Nav.MenuItems.OfType<NavigationViewItem>())
             {
@@ -86,6 +90,31 @@ public partial class MainWindow : Window
         if (ContentFrame.Content is IThemeRefreshable refreshable)
             refreshable.RefreshTheme();
     }
+
+    /// <summary>
+    /// 「浏览器标签页统计」开关同时管着左侧「网页」入口：关掉就隐藏入口，
+    /// 打开再显示。历史数据一条不删——重新打开后网页页还能看到之前记录。
+    /// </summary>
+    private bool _browserNavEnabled = true;
+
+    public void RefreshBrowserNav()
+    {
+        bool enabled;
+        try { enabled = App.Current.Database.GetSetting("browser_tab_enabled", "true") != "false"; }
+        catch { enabled = _browserNavEnabled; }   // 读库撞锁就沿用上一次状态
+        _browserNavEnabled = enabled;
+
+        if (FindNavItem("web") is { } web)
+            web.Visibility = enabled ? Visibility.Visible : Visibility.Collapsed;
+
+        // 正停在网页页时把开关关了：入口消失后页面不能继续留着，切回历史页
+        if (!enabled && _currentTag == "web" && FindNavItem("history") is { } history)
+            Nav.SelectedItem = history;
+    }
+
+    private NavigationViewItem? FindNavItem(string tag) =>
+        Nav.MenuItems.OfType<NavigationViewItem>()
+            .FirstOrDefault(mi => mi.Tag is string t && t == tag);
 
     private void Nav_SelectionChanged(NavigationView sender, NavigationViewSelectionChangedEventArgs args)
     {

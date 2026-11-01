@@ -1656,9 +1656,15 @@ public sealed class Database
         for (var i = 0; i < ids.Count; i++) cmd.Parameters.AddWithValue($"$a{i}", ids[i]);
         cmd.Parameters.AddWithValue("$f", ToIso(fromUtc));
         cmd.Parameters.AddWithValue("$t", ToIso(toUtc));
+        var excluded = WebPrivacy.ResolveList(GetSettingRaw(c, WebPrivacy.SettingKey, ""));
         using var r = cmd.ExecuteReader();
         while (r.Read())
-            list.Add(new PageUsageRow(r.GetString(0), r.GetString(1), r.GetString(2), r.GetDouble(3)));
+        {
+            var site = r.GetString(0);
+            // 敏感域名即使已经落库（旧版本采集的），展示时也不出现
+            if (WebPrivacy.IsExcluded(site, excluded)) continue;
+            list.Add(new PageUsageRow(site, r.GetString(1), r.GetString(2), r.GetDouble(3)));
+        }
         return list;
     }
 
@@ -1692,12 +1698,14 @@ public sealed class Database
         }
 
         var merged = new Dictionary<(int, string, string, string), double>();
+        var excluded = WebPrivacy.ResolveList(GetSettingRaw(c, WebPrivacy.SettingKey, ""));
         foreach (var row in rows)
         {
             if (!map.TryGetValue(row.AppId, out var src)) continue;
             var effective = ResolveEffectiveAppId(map, row.AppId);
             if (src.Ignored != 0 || map[effective].Ignored != 0) continue;
             if (!BrowserCatalog.IsBrowser(map[effective].ProcessName)) continue;
+            if (WebPrivacy.IsExcluded(row.Site, excluded)) continue;
 
             var key = (effective, row.Site, row.Title, row.Url);
             merged.TryGetValue(key, out var sec);
@@ -1727,6 +1735,7 @@ public sealed class Database
                 var effective = ResolveEffectiveAppId(map, srcId);
                 if (src.Ignored != 0 || map[effective].Ignored != 0) continue;
                 if (!BrowserCatalog.IsBrowser(map[effective].ProcessName)) continue;
+                if (WebPrivacy.IsExcluded(r2.GetString(1), excluded)) continue;
 
                 list.Add(new WebPageRow(r2.GetString(1), "", "", map[effective].AppName,
                     map[effective].ProcessName, r2.GetDouble(2)));
@@ -1742,6 +1751,7 @@ public sealed class Database
         var list = new List<WebTimelineRow>();
         using var c = Open();
         var map = LoadAppInfo(c);
+        var excluded = WebPrivacy.ResolveList(GetSettingRaw(c, WebPrivacy.SettingKey, ""));
         using var cmd = c.CreateCommand();
         cmd.CommandText = """
             SELECT s.app_id, MAX(s.start_ts, $f), MIN(s.end_ts, $t),
@@ -1761,6 +1771,7 @@ public sealed class Database
             var effective = ResolveEffectiveAppId(map, r.GetInt32(0));
             if (!map.TryGetValue(effective, out var app) || src.Ignored != 0 || app.Ignored != 0 ||
                 !BrowserCatalog.IsBrowser(app.ProcessName)) continue;
+            if (WebPrivacy.IsExcluded(r.GetString(3), excluded)) continue;
 
             var start = ParseIso(r.GetString(1));
             var end = ParseIso(r.GetString(2));
@@ -1938,6 +1949,21 @@ public sealed class Database
             DELETE FROM daily_totals;
             DELETE FROM daily_app_totals;
             DELETE FROM daily_purpose_totals;
+            DELETE FROM daily_site_totals;
+            """;
+        cmd.ExecuteNonQuery();
+    }
+
+    /// <summary>
+    /// 清除全部网页记录：片段的 site/url 置空，并删掉已折叠的域名汇总。
+    /// 应用、时长与窗口标题都保留——用户只想抹掉「看过哪些网页」时用这个。
+    /// </summary>
+    public void ClearWebData()
+    {
+        using var c = Open();
+        using var cmd = c.CreateCommand();
+        cmd.CommandText = """
+            UPDATE usage_segments SET site='', url='';
             DELETE FROM daily_site_totals;
             """;
         cmd.ExecuteNonQuery();

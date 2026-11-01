@@ -174,7 +174,9 @@ ScreenTime.WinUI/           界面进程
 - **干扰过滤**：系统外壳进程（开始菜单、搜索、锁屏等）直接穿透，不打断当前真实应用；
   UWP 通过 `ApplicationFrameHost` 子窗口还原真实进程；安装器在 Temp 解压出的瞬时进程不计入。
 - **浏览器页面级**：UIA 读 Document 元素的 URL，拿不到时从 Chrome/Edge 本地历史库回填
-  （只读、跳过邮件与网银域名）。回填跑在 Agent 进程里，UI 关掉也照常补。
+  （只读）。回填跑在 Agent 进程里，UI 关掉也照常补。
+  敏感域名（邮件、网银、密码管理器，可在设置里追加）在**采集、回填、网页页展示**三处一起排除，
+  不会出现在库里，也不会出现在列表里；网页地址会去掉 fragment 与 utm/gclid 等追踪参数。
 - **碎片治理**：标题在片段前 3 秒内连跳时只就地更新、不切分；每 5 分钟把最近 2 小时里
   被切碎的短片段并回相邻同应用片段。
 - **噪声过滤**：系统宿主 / 安装器 / Temp 解压出的瞬时进程（`msiexec`、`wixstdba`、
@@ -187,7 +189,7 @@ ScreenTime.WinUI/           界面进程
 dotnet test ScreenTime.sln -c Release
 ```
 
-141 个用例，覆盖 `ScreenTime.Core` 的纯逻辑：
+149 个用例，覆盖 `ScreenTime.Core` 的纯逻辑：
 
 - **统计口径**（`StatsService`）：区间并集（重叠 / 嵌套 / 相邻 / 乱序 / 倒序 / 空）、
   时长格式化（0、秒级、分钟级、小时级、NaN、Infinity、超大值）

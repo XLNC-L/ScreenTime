@@ -55,6 +55,8 @@ public partial class SettingsPage : Page
                 if ((string)item.Tag == detailRetention) DetailRetentionBox.SelectedItem = item;
 
             DbPathText.Text = "数据库位置：" + db.DbPath;
+            // 只回显用户追加的部分：内置名单固定生效，不需要（也不应该）让用户重写
+            ExcludeDomainsBox.Text = db.GetSetting(WebPrivacy.SettingKey, "");
         }
         catch
         {
@@ -184,6 +186,8 @@ public partial class SettingsPage : Page
             App.Current.Database.SetSetting("browser_tab_enabled", value);
             App.SignalSettingsChanged();
         });
+        // 左侧「网页」入口跟随这个开关显示/隐藏（历史数据保留）
+        App.Current.RefreshBrowserNav();
     }
 
     private async void HistoryBackfillSwitch_Toggled(object sender, RoutedEventArgs e)
@@ -341,6 +345,35 @@ public partial class SettingsPage : Page
         var folder = Path.GetDirectoryName(App.Current.Database.DbPath);
         if (folder != null)
             Process.Start(new ProcessStartInfo("explorer.exe", folder) { UseShellExecute = true });
+    }
+
+    private async void SaveExcludeDomainsBtn_Click(object sender, RoutedEventArgs e)
+    {
+        var value = (ExcludeDomainsBox.Text ?? "").Trim();
+        await RunDbAsync(() =>
+        {
+            App.Current.Database.SetSetting(WebPrivacy.SettingKey, value);
+            // 采集器在内存里缓存了名单，推一次版本号让它 10 秒内重新读
+            App.SignalSettingsChanged();
+        });
+        ShowInfoBar("敏感域名名单已保存，采集与展示都会按新名单生效。", InfoBarSeverity.Success);
+        await RefreshHealthAsync();
+    }
+
+    private async void ClearWebBtn_Click(object sender, RoutedEventArgs e)
+    {
+        var dialog = new ContentDialog
+        {
+            XamlRoot = XamlRoot,
+            Title = "ScreenTime",
+            Content = "确定清除全部网页记录吗？所有网页地址与域名统计会被清空，应用使用时长保留。此操作不可恢复。",
+            PrimaryButtonText = "清除",
+            CloseButtonText = "取消"
+        };
+        if (await dialog.ShowAsync() != ContentDialogResult.Primary) return;
+
+        await RunDbAsync(App.Current.Database.ClearWebData);
+        ShowInfoBar("已清除网页记录。", InfoBarSeverity.Success);
     }
 
     private async void ClearBtn_Click(object sender, RoutedEventArgs e)

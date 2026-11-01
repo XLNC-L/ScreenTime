@@ -72,6 +72,9 @@ public sealed class WatcherService : IDisposable
     private DateTime _lastAudioMarkUtc = DateTime.MinValue;
     private DateTime _lastErrorMarkUtc = DateTime.MinValue;
 
+    /// <summary>敏感域名排除名单：随设置热重载刷新，不跟着 5 秒心跳读库。</summary>
+    private string[] _excludedDomains = WebPrivacy.ResolveList("");
+
     /// <summary>记录「这条采集通道还活着」，供设置页的运行状态卡片判断是否漏记。</summary>
     private void MarkCollectAlive(string settingKey, ref DateTime last, DateTime now)
     {
@@ -131,6 +134,7 @@ public sealed class WatcherService : IDisposable
         _audioEnabled = _db.GetSetting("audio_enabled", "true") != "false";
         _purposeAskEnabled = _db.GetSetting("purpose_ask_enabled", "false") == "true";
         _browserTabEnabled = _db.GetSetting("browser_tab_enabled", "true") != "false";
+        _excludedDomains = WebPrivacy.ResolveList(_db.GetSetting(WebPrivacy.SettingKey, ""));
 
         _fgWatcher.ForegroundChanged += OnForegroundChanged;
         _fgWatcher.Start();
@@ -190,6 +194,7 @@ public sealed class WatcherService : IDisposable
             _audioEnabled = _db.GetSetting("audio_enabled", "true") != "false";
             _purposeAskEnabled = _db.GetSetting("purpose_ask_enabled", "false") == "true";
             _browserTabEnabled = _db.GetSetting("browser_tab_enabled", "true") != "false";
+            _excludedDomains = WebPrivacy.ResolveList(_db.GetSetting(WebPrivacy.SettingKey, ""));
             if (!_audioEnabled)
             {
                 foreach (var seg in _audioSegments.Values)
@@ -297,6 +302,9 @@ public sealed class WatcherService : IDisposable
         if (_browserTabEnabled && BrowserTabService.IsBrowser(info.ProcessName))
         {
             site = _browserTabs.GetSite(info.Hwnd, info.ProcessName);
+            // 敏感域名（邮件/网银/密码管理器 + 用户自定义）一律不记录，
+            // 与历史回填、网页页查询共用同一份名单
+            site = WebPrivacy.FilterSite(site, _excludedDomains);
             if (site != "")
                 purpose = PurposeService.FromSite(site, purpose);
         }

@@ -29,10 +29,8 @@ public sealed class HistoryImportService : IDisposable
     /// </summary>
     private static readonly TimeSpan TitleFallbackWindow = TimeSpan.FromMinutes(60);
 
-    /// <summary>敏感域名排除（子串匹配）：邮件、网银、密码管理器等不回填。</summary>
-    private const string DefaultExcluded = "mail.google.com,outlook.live.com,outlook.office.com," +
-        "alipay.com,tenpay.com,icbc.com.cn,ccb.com.cn,bankofchina.com,abchina.com,cmbchina.com," +
-        "1password.com,lastpass.com,bitwarden.com";
+    /// <summary>敏感域名排除名单：内置（邮件/网银/密码管理器）+ 用户在设置里追加的。</summary>
+    private string[] ExcludedDomains() => WebPrivacy.ResolveList(_db.GetSetting(WebPrivacy.SettingKey, ""));
 
     private static readonly (string Name, string UserData)[] Browsers =
     [
@@ -130,8 +128,7 @@ public sealed class HistoryImportService : IDisposable
 
         visits = visits.OrderBy(v => v.Utc).ToList();
 
-        var excluded = (_db.GetSetting("history_excluded_domains", DefaultExcluded) ?? "")
-            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        var excluded = ExcludedDomains();
         var filled = 0;
         var samples = new List<string>();
 
@@ -141,14 +138,14 @@ public sealed class HistoryImportService : IDisposable
             if (hit == null) continue;
 
             var raw = hit.Value.Url;
-            if (IsExcluded(raw, excluded)) continue;
+            if (WebPrivacy.IsExcluded(raw, excluded)) continue;
 
             var site = BrowserTabService.ExtractPage(raw);
             if (string.IsNullOrEmpty(site)) continue;
 
-            filled += _db.BackfillPage(seg.Id, site, CleanUrl(raw));
+            filled += _db.BackfillPage(seg.Id, site, WebPrivacy.CleanUrl(raw));
             if (samples.Count < 5)
-                samples.Add($"{seg.StartUtc:yyyy-MM-dd HH:mm:ss}Z {site} -> {CleanUrl(raw)}");
+                samples.Add($"{seg.StartUtc:yyyy-MM-dd HH:mm:ss}Z {site} -> {WebPrivacy.CleanUrl(raw)}");
         }
 
         LastSummary = $"候选 {browserOnly.Count} 条，visit {visits.Count} 条，回填 {filled} 条";
@@ -299,38 +296,6 @@ public sealed class HistoryImportService : IDisposable
     private static long ToChromeMicros(DateTime utc) => (utc - ChromeEpoch).Ticks / 10;
 
     private static DateTime FromChromeMicros(long micros) => ChromeEpoch.AddTicks(micros * 10);
-
-    private static bool IsExcluded(string url, string[] excluded)
-    {
-        if (excluded.Length == 0) return false;
-        var lower = url.ToLowerInvariant();
-        return excluded.Any(e => lower.Contains(e.ToLowerInvariant()));
-    }
-
-    /// <summary>去掉 fragment 与追踪参数，截断到 200 字符，仅用于点击跳转。</summary>
-    private static string CleanUrl(string url)
-    {
-        url = url.Trim();
-        var hash = url.IndexOf('#');
-        if (hash >= 0) url = url[..hash];
-
-        var q = url.IndexOf('?');
-        if (q >= 0)
-        {
-            var head = url[..q];
-            var kept = url[(q + 1)..].Split('&', StringSplitOptions.RemoveEmptyEntries)
-                .Where(p =>
-                {
-                    var name = p.Split('=')[0].ToLowerInvariant();
-                    return !name.StartsWith("utm_") &&
-                           name is not ("gclid" or "fbclid" or "msclkid" or "spm_id_from" or "vd_source"
-                               or "share_source" or "share_medium");
-                })
-                .ToList();
-            url = kept.Count == 0 ? head : head + "?" + string.Join("&", kept);
-        }
-        return url.Length > 200 ? url[..200] : url;
-    }
 
     private static void TryDelete(string path)
     {

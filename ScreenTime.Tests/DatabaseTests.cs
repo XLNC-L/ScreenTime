@@ -374,4 +374,35 @@ public class DatabaseTests : IDisposable
         var daily = _db.QueryDailySeconds(new DateTime(2026, 1, 1), 1);
         Assert.Equal(10, daily["2026-01-01"], 1);   // 忽略的应用不计入当天总时长
     }
+
+    // ---------- 网页记录清除 ----------
+
+    [Fact]
+    public void QueryWebPages_FiltersExcludedDomains()
+    {
+        var chrome = _db.GetOrCreateApp(@"C:\B\chrome3.exe", "chrome", "Chrome3", "", "浏览与资讯");
+        _db.InsertSegment(chrome, "foreground", Base, Base.AddSeconds(30),
+            "标题", "2026-01-01", "", "secret.example", "https://secret.example/a");
+        _db.SetSetting(Services.WebPrivacy.SettingKey, "secret.example");
+
+        // 已落库的敏感域名，展示层也要过滤掉
+        Assert.Empty(_db.QueryWebPages(Base, Base.AddSeconds(60)));
+        Assert.Empty(_db.QueryPageUsage(chrome, Base, Base.AddSeconds(60)));
+        // 时长不受影响
+        Assert.Equal(30, _db.QueryAppUsage(Base, Base.AddSeconds(60)).Sum(a => a.TotalSeconds), 1);
+    }
+
+    [Fact]
+    public void ClearWebData_KeepsAppsAndDurations()
+    {
+        var chrome = _db.GetOrCreateApp(@"C:\B\chrome2.exe", "chrome", "Chrome2", "", "浏览与资讯");
+        _db.InsertSegment(chrome, "foreground", Base, Base.AddSeconds(30),
+            "标题", "2026-01-01", "", "example.com", "https://example.com/a");
+        _db.FoldDetailsBefore("2026-01-02");   // 让域名也进一遍汇总表
+
+        _db.ClearWebData();
+
+        Assert.Empty(_db.QueryWebPages(Base, Base.AddSeconds(60)));
+        Assert.Equal(30, _db.QueryAppUsage(Base, Base.AddSeconds(60)).Sum(a => a.TotalSeconds), 1);
+    }
 }

@@ -221,6 +221,9 @@ public partial class App : Application
     /// <summary>刷新收件箱导航徽标。</summary>
     public void RefreshInboxBadge() => _mainWindow?.RefreshInboxBadge();
 
+    /// <summary>让左侧「网页」入口跟随「浏览器标签页统计」开关。</summary>
+    public void RefreshBrowserNav() => _mainWindow?.RefreshBrowserNav();
+
     public void RefreshCurrentPage() => _mainWindow?.RefreshCurrentPage();
 
     public void ExitApp()
