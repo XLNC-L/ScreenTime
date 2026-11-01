@@ -446,19 +446,22 @@ public partial class TodayPage : Page
             _tlWidth = w;
         }
 
-        // 动态刻度（标签边界内对齐，避免首尾被截断）
-        const double labelW = 30;
+        // 动态刻度：先量出文字实际宽度，再把左边界夹在 0..(宽-文字宽)，
+        // 否则最右一个 "24:00" 会超出容器被裁成 "00…"（固定按 30 宽估算会差几个像素）
+        var labelArea = HourLabels.ActualWidth > 0 ? HourLabels.ActualWidth : w;
         for (var t = rangeStart; t <= rangeEnd; t = t.AddMinutes(tickMinutes))
         {
-            var left = Math.Clamp(X(t) - labelW / 2, 0, Math.Max(w - labelW, 0));
             var label = new TextBlock
             {
                 Text = $"{t.Hour:00}:{t.Minute:00}",
                 Style = Application.Current.Resources["CaptionTextBlockStyle"] as Style,
                 Foreground = Application.Current.Resources["TextFillColorSecondaryBrush"] as Brush,
-                HorizontalAlignment = HorizontalAlignment.Left,
-                Margin = new Thickness(left, 0, 0, 0)
+                HorizontalAlignment = HorizontalAlignment.Left
             };
+            label.Measure(new Windows.Foundation.Size(double.PositiveInfinity, double.PositiveInfinity));
+            var labelW = label.DesiredSize.Width;
+            var left = Math.Clamp(X(t) - labelW / 2, 0, Math.Max(labelArea - labelW, 0));
+            label.Margin = new Thickness(left, 0, 0, 0);
             HourLabels.Children.Add(label);
         }
     }
