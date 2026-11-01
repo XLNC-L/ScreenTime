@@ -218,7 +218,8 @@ public partial class HistoryPage : Page
         double PrevTotalSeconds,
         string PrevTopApp,
         Database.LongestSession? Longest,
-        int SwitchTotal);
+        int SwitchTotal,
+        string? FoldedNotice);
 
     /// <summary>在后台线程执行：查库 + 纯计算，不碰任何 UI 对象。</summary>
     private Snapshot BuildSnapshot(DateTime from, DateTime to, DateTime fromDay, int days)
@@ -249,9 +250,17 @@ public partial class HistoryPage : Page
         var longest = _db.QueryLongestSession(from, to);
         var switches = _db.QuerySwitchTotal(fromDay, fromDay.AddDays(days));
 
+        // 起始日落在折叠期：柱状仍有汇总值，但时间线与最活跃时段只有明细，需要在界面上说明
+        var cutoff = _db.DetailCutoffDay();
+        var foldedNotice = cutoff is not null &&
+                           fromDay.ToString("yyyy-MM-dd").CompareTo(cutoff) < 0
+            ? $"明细只保留到 {DateTime.Parse(cutoff):M月d日}：更早的日期已折叠为按日汇总，" +
+              "每日柱状与总时长仍然准确，但「最活跃时段」只覆盖明细期。"
+            : null;
+
         return new Snapshot(apps, totalSec, categories, topCategory, iconByApp, purposes,
             BuildDayTotals(daily, fromDay, days), BuildHourSeconds(segments),
-            prevTotal, prevTop, longest, switches);
+            prevTotal, prevTop, longest, switches, foldedNotice);
     }
 
     /// <summary>每日总时长：明细期用区间并集，折叠期用日汇总，两者按本地日合并。</summary>
@@ -318,7 +327,8 @@ public partial class HistoryPage : Page
         FillIconsAsync(rows);
 
         BindPurpose(snapshot.Purposes);
-        BindReportExtras(snapshot.DayTotals, snapshot.HourSeconds, days, snapshot.TopCategory);
+        BindReportExtras(snapshot.DayTotals, snapshot.HourSeconds, days, snapshot.TopCategory,
+            snapshot.FoldedNotice);
         BindInsights(snapshot, days);
     }
 
@@ -457,8 +467,11 @@ public partial class HistoryPage : Page
 
     /// <summary>每日柱状图 + 最活跃时段：分桶计算已在后台完成，这里只做绑定。</summary>
     private void BindReportExtras(List<(DateTime Day, double Seconds)> dayTotals, double[] hourSec,
-        int days, string topCategory)
+        int days, string topCategory, string? foldedNotice)
     {
+        FoldedNotice.Text = foldedNotice ?? "";
+        FoldedNotice.Visibility = foldedNotice is null ? Visibility.Collapsed : Visibility.Visible;
+
         var maxDay = dayTotals.Count > 0 ? Math.Max(dayTotals.Max(d => d.Seconds), 1) : 1;
         Bars.ItemsSource = dayTotals.Select((d, idx) => new
         {

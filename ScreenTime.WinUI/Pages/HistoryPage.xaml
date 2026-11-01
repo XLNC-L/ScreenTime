@@ -277,7 +277,15 @@
 
             <Border Padding="16" Background="{ThemeResource CardBackgroundFillColorDefaultBrush}" BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1" CornerRadius="8">
                 <StackPanel Spacing="8">
-                    <TextBlock Style="{StaticResource SubtitleTextBlockStyle}" Text="每日时长" />
+                    <StackPanel Spacing="4">
+                        <TextBlock Style="{StaticResource SubtitleTextBlockStyle}" Text="每日时长" />
+                        <TextBlock
+                            x:Name="FoldedNotice"
+                            Style="{StaticResource CaptionTextBlockStyle}"
+                            Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                            TextWrapping="Wrap"
+                            Visibility="Collapsed" />
+                    </StackPanel>
                     <ScrollViewer HorizontalScrollBarVisibility="Auto" HorizontalScrollMode="Enabled">
                         <ItemsControl x:Name="Bars">
                             <ItemsControl.ItemsPanel><ItemsPanelTemplate><StackPanel Orientation="Horizontal" /></ItemsPanelTemplate></ItemsControl.ItemsPanel>

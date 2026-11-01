@@ -101,5 +101,16 @@
                 <RadioButton Content="社交通讯" />
             </RadioButtons>
         </TeachingTip>
+
+        <!-- 目标与连续使用提醒（Agent 写 pending_reminder，这里轮询后弹非模态提示） -->
+        <TeachingTip
+            x:Name="ReminderTip"
+            Title="屏幕时间提醒"
+            Subtitle=""
+            PreferredPlacement="Auto"
+            ActionButtonContent="知道了"
+            CloseButtonContent="今天不再提醒"
+            ActionButtonClick="ReminderTip_Ok"
+            CloseButtonClick="ReminderTip_Snooze" />
     </Grid>
 </Window>

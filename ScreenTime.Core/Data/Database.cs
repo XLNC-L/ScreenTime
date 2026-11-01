@@ -2264,7 +2264,8 @@ public sealed class Database
         string LastForegroundUtc,
         string LastAudioUtc,
         int RetentionDays,
-        string? CutoffDay);
+        string? CutoffDay,
+        List<string> Warnings);
 
     public HealthSnapshot GetHealth()
     {
@@ -2273,21 +2274,56 @@ public sealed class Database
 
         string lastEnd = "";
         int segments = 0, apps = 0, folded = 0;
+        var warnings = new List<string>();
         using (var c = Open())
         {
-            using var cmd = c.CreateCommand();
-            cmd.CommandText = """
-                SELECT COALESCE(MAX(end_ts), ''), (SELECT COUNT(*) FROM usage_segments),
-                       (SELECT COUNT(*) FROM apps), (SELECT COUNT(*) FROM daily_totals)
-                FROM usage_segments;
-                """;
-            using var r = cmd.ExecuteReader();
-            if (r.Read())
+            using (var cmd = c.CreateCommand())
             {
-                lastEnd = r.GetString(0);
-                segments = r.GetInt32(1);
-                apps = r.GetInt32(2);
-                folded = r.GetInt32(3);
+                cmd.CommandText = """
+                    SELECT COALESCE(MAX(end_ts), ''), (SELECT COUNT(*) FROM usage_segments),
+                           (SELECT COUNT(*) FROM apps), (SELECT COUNT(*) FROM daily_totals)
+                    FROM usage_segments;
+                    """;
+                using var r = cmd.ExecuteReader();
+                if (r.Read())
+                {
+                    lastEnd = r.GetString(0);
+                    segments = r.GetInt32(1);
+                    apps = r.GetInt32(2);
+                    folded = r.GetInt32(3);
+                }
+            }
+
+            // 数据检查：只提示「疑似」，不替用户判定对错
+            using (var cmd = c.CreateCommand())
+            {
+                cmd.CommandText = """
+                    SELECT COUNT(*) FROM usage_segments
+                    WHERE kind = 'foreground' AND end_ts > $f
+                      AND (julianday(end_ts) - julianday(start_ts)) * 86400 > 21600
+                    """;
+                cmd.Parameters.AddWithValue("$f", ToIso(DateTime.UtcNow.AddDays(-7)));
+                var longSegs = Convert.ToInt32(cmd.ExecuteScalar());
+                if (longSegs > 0)
+                    warnings.Add($"最近 7 天有 {longSegs} 条前台片段超过 6 小时，可能在休眠/锁屏期间仍在计时");
+            }
+
+            using (var cmd = c.CreateCommand())
+            {
+                cmd.CommandText = """
+                    SELECT COALESCE(SUM(CASE WHEN type='display_on' THEN 1 ELSE 0 END), 0),
+                           COALESCE(SUM(CASE WHEN type='display_off' THEN 1 ELSE 0 END), 0)
+                    FROM session_events
+                    WHERE ts > $f AND type IN ('display_on','display_off')
+                    """;
+                cmd.Parameters.AddWithValue("$f", ToIso(DateTime.UtcNow.AddDays(-7)));
+                using var r = cmd.ExecuteReader();
+                if (r.Read())
+                {
+                    var diff = r.GetInt32(0) - r.GetInt32(1);
+                    if (diff > 1)
+                        warnings.Add($"最近 7 天有 {diff} 个亮屏事件未配对（可能关机/强退时漏写熄灭事件）");
+                }
             }
         }
 
@@ -2305,10 +2341,34 @@ public sealed class Database
             GetSetting("collect_last_foreground_utc", "") ?? "",
             GetSetting("collect_last_audio_utc", "") ?? "",
             DetailRetentionDays(),
-            DetailCutoffDay());
+            DetailCutoffDay(),
+            warnings);
     }
 
     // ---------------- 行为洞察（v1.3.2） ----------------
+
+    public sealed record CurrentForeground(int AppId, string AppName, string Category,
+        DateTime StartUtc, DateTime EndUtc);
+
+    /// <summary>最后一条前台片段（用于「连续使用超时」提醒，调用方要自己判断是否仍在使用）。</summary>
+    public CurrentForeground? QueryCurrentForeground()
+    {
+        using var c = Open();
+        using var cmd = c.CreateCommand();
+        cmd.CommandText = """
+            SELECT s.app_id, COALESCE(ca.app_name, a.app_name), COALESCE(ca.category, a.category),
+                   s.start_ts, s.end_ts
+            FROM usage_segments s
+            JOIN apps a ON a.id = s.app_id
+            LEFT JOIN apps ca ON ca.id = a.merged_into
+            WHERE s.kind = 'foreground' AND a.ignored = 0 AND (a.merged_into = 0 OR ca.ignored = 0)
+            ORDER BY s.end_ts DESC LIMIT 1
+            """;
+        using var r = cmd.ExecuteReader();
+        if (!r.Read()) return null;
+        return new CurrentForeground(r.GetInt32(0), r.GetString(1), r.GetString(2),
+            ParseIso(r.GetString(3)), ParseIso(r.GetString(4)));
+    }
 
     /// <summary>写入某小时的切换次数（绝对值）：采集侧每 5 分钟刷一次累计值。</summary>
     public void SetHourlySwitches(string day, int hour, int count)
@@ -2379,7 +2439,7 @@ public sealed class Database
             var end = ParseIso(r.GetString(2));
             if (end <= start) continue;
 
-            if (app == currentApp && (start - currentEnd).TotalMinutes <= 2)
+            if (ForegroundPolicy.IsSameContinuingSession(currentApp, app, currentEnd, start))
             {
                 currentEnd = end;
                 continue;
@@ -2531,6 +2591,101 @@ public sealed class Database
             ck.ExecuteNonQuery();
         }
         File.Copy(DbPath, path, overwrite: true);
+    }
+
+    /// <summary>
+    /// 导出可迁移的数据包（zip：screentime.db + meta.json）。
+    /// 换机器或重装时不用自己去 %AppData% 里找数据库文件。
+    /// </summary>
+    public (int Apps, int Segments, string Path) ExportPackage(string zipPath)
+    {
+        var tmpDir = Path.Combine(Path.GetTempPath(), "screentime-export-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tmpDir);
+        try
+        {
+            var dbCopy = Path.Combine(tmpDir, "screentime.db");
+            BackupTo(dbCopy);
+
+            var health = GetHealth();
+            var meta = new
+            {
+                app = "ScreenTime",
+                format = 1,                       // 包格式版本，后续结构变化时递增
+                exportedAt = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"),
+                apps = health.AppCount,
+                segments = health.SegmentCount,
+                foldedDays = health.FoldedDays
+            };
+            File.WriteAllText(Path.Combine(tmpDir, "meta.json"),
+                System.Text.Json.JsonSerializer.Serialize(meta,
+                    new System.Text.Json.JsonSerializerOptions { WriteIndented = true }),
+                new System.Text.UTF8Encoding(false));
+
+            if (File.Exists(zipPath)) File.Delete(zipPath);
+            System.IO.Compression.ZipFile.CreateFromDirectory(tmpDir, zipPath,
+                System.IO.Compression.CompressionLevel.Optimal, includeBaseDirectory: false);
+            return (health.AppCount, health.SegmentCount, zipPath);
+        }
+        finally
+        {
+            try { Directory.Delete(tmpDir, recursive: true); } catch { }
+        }
+    }
+
+    public sealed record ImportResult(bool Ok, string? Error, string? BackupPath, int Apps, int Segments);
+
+    /// <summary>
+    /// 从数据包恢复。调用方必须先停掉 Agent 进程（它持有写连接），恢复前会把当前库备份到 backups/。
+    /// 导入后自动跑一次 Migrate：旧版本导出的包可能缺列，靠结构补齐兜住。
+    /// </summary>
+    public ImportResult ImportPackage(string zipPath)
+    {
+        var tmpDir = Path.Combine(Path.GetTempPath(), "screentime-import-" + Guid.NewGuid().ToString("N"));
+        string? backup = null;
+        try
+        {
+            Directory.CreateDirectory(tmpDir);
+            System.IO.Compression.ZipFile.ExtractToDirectory(zipPath, tmpDir, overwriteFiles: true);
+
+            var imported = Path.Combine(tmpDir, "screentime.db");
+            if (!File.Exists(imported))
+                return new ImportResult(false, "数据包里没有 screentime.db", null, 0, 0);
+
+            // 文件头校验，避免把普通文件当成库
+            using (var fs = File.OpenRead(imported))
+            {
+                var head = new byte[16];
+                if (fs.Read(head, 0, head.Length) < head.Length ||
+                    System.Text.Encoding.ASCII.GetString(head) != "SQLite format 3\0")
+                    return new ImportResult(false, "数据包里的数据库文件无效", null, 0, 0);
+            }
+
+            var dir = Path.GetDirectoryName(DbPath) ?? DefaultDataDirectory();
+            var backupDir = Path.Combine(dir, "backups");
+            Directory.CreateDirectory(backupDir);
+            backup = Path.Combine(backupDir, $"before-import-{DateTime.Now:yyyyMMdd-HHmmss}.db");
+            BackupTo(backup);   // 内含 wal_checkpoint，先把待写数据并进主库
+
+            // 覆盖主库，并清掉旧库残留的 WAL/SHM（否则旧日志会被重放到新库上）
+            foreach (var suffix in new[] { "-wal", "-shm" })
+            {
+                var side = DbPath + suffix;
+                try { if (File.Exists(side)) File.Delete(side); } catch { }
+            }
+            File.Copy(imported, DbPath, overwrite: true);
+
+            Migrate();
+            var health = GetHealth();
+            return new ImportResult(true, null, backup, health.AppCount, health.SegmentCount);
+        }
+        catch (Exception ex)
+        {
+            return new ImportResult(false, ex.Message, backup, 0, 0);
+        }
+        finally
+        {
+            try { Directory.Delete(tmpDir, recursive: true); } catch { }
+        }
     }
 
     public static string ToIso(DateTime t) => t.ToString("yyyy-MM-ddTHH:mm:ss.fffZ");

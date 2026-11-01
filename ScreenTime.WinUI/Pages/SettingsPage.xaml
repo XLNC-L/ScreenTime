@@ -91,6 +91,53 @@
                 </Border>
             </StackPanel>
 
+            <!-- 目标与提醒：只在应用内弹非模态提示，不锁屏、不强制退出 -->
+            <StackPanel Spacing="12">
+                <TextBlock Style="{StaticResource SubtitleTextBlockStyle}" Text="目标与提醒" />
+                <Border
+                    Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                    BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                    BorderThickness="1"
+                    CornerRadius="8">
+                    <StackPanel>
+                        <settings:SettingsCard Header="游戏每日目标" Description="超过后当天提醒一次，不会强制关闭应用">
+                            <ComboBox x:Name="GoalGameBox" Width="160" Tag="goal_game_minutes" SelectionChanged="GoalBox_SelectionChanged">
+                                <ComboBoxItem Tag="0" Content="关闭" />
+                                <ComboBoxItem Tag="60" Content="1 小时" />
+                                <ComboBoxItem Tag="120" Content="2 小时" />
+                                <ComboBoxItem Tag="180" Content="3 小时" />
+                                <ComboBoxItem Tag="240" Content="4 小时" />
+                            </ComboBox>
+                        </settings:SettingsCard>
+                        <settings:SettingsCard Header="影音每日目标" Description="视频、音乐、直播类应用的合计时长">
+                            <ComboBox x:Name="GoalVideoBox" Width="160" Tag="goal_video_minutes" SelectionChanged="GoalBox_SelectionChanged">
+                                <ComboBoxItem Tag="0" Content="关闭" />
+                                <ComboBoxItem Tag="30" Content="30 分钟" />
+                                <ComboBoxItem Tag="60" Content="1 小时" />
+                                <ComboBoxItem Tag="120" Content="2 小时" />
+                                <ComboBoxItem Tag="180" Content="3 小时" />
+                            </ComboBox>
+                        </settings:SettingsCard>
+                        <settings:SettingsCard Header="社交每日目标" Description="即时通讯、社交类应用的合计时长">
+                            <ComboBox x:Name="GoalSocialBox" Width="160" Tag="goal_social_minutes" SelectionChanged="GoalBox_SelectionChanged">
+                                <ComboBoxItem Tag="0" Content="关闭" />
+                                <ComboBoxItem Tag="30" Content="30 分钟" />
+                                <ComboBoxItem Tag="60" Content="1 小时" />
+                                <ComboBoxItem Tag="120" Content="2 小时" />
+                            </ComboBox>
+                        </settings:SettingsCard>
+                        <settings:SettingsCard Header="连续使用提醒" Description="同一个应用连续使用超过该时长时提示一次（每天每种应用一次）">
+                            <ComboBox x:Name="LongReminderBox" Width="160" Tag="reminder_long_minutes" SelectionChanged="GoalBox_SelectionChanged">
+                                <ComboBoxItem Tag="0" Content="关闭" />
+                                <ComboBoxItem Tag="60" Content="1 小时" />
+                                <ComboBoxItem Tag="90" Content="90 分钟" />
+                                <ComboBoxItem Tag="120" Content="2 小时" />
+                            </ComboBox>
+                        </settings:SettingsCard>
+                    </StackPanel>
+                </Border>
+            </StackPanel>
+
             <!-- 运行状态：采集是否在跑、库多大、有没有异常（只读本地数据） -->
             <StackPanel Spacing="12">
                 <TextBlock Style="{StaticResource SubtitleTextBlockStyle}" Text="运行状态" />
@@ -121,6 +168,14 @@
                         <settings:SettingsCard Header="最近异常">
                             <TextBlock
                                 x:Name="HealthErrorText"
+                                Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                TextWrapping="Wrap"
+                                MaxWidth="420"
+                                Text="读取中…" />
+                        </settings:SettingsCard>
+                        <settings:SettingsCard Header="数据检查" Description="只提示可疑之处，不替你判定对错">
+                            <TextBlock
+                                x:Name="HealthWarnText"
                                 Foreground="{ThemeResource TextFillColorSecondaryBrush}"
                                 TextWrapping="Wrap"
                                 MaxWidth="420"
@@ -201,6 +256,22 @@
                                 </Button>
                             </StackPanel>
                         </settings:SettingsCard>
+                        <settings:SettingsCard Header="数据包迁移" Description="导出为单个 zip（数据库 + 元信息），换机或重装后可一键恢复；导入前会自动备份当前库">
+                            <StackPanel Orientation="Horizontal" Spacing="8">
+                                <Button Click="ExportPackageBtn_Click">
+                                    <StackPanel Orientation="Horizontal">
+                                        <FontIcon FontSize="12" Glyph="&#xE896;" />
+                                        <TextBlock Margin="8,0,0,0" Text="导出数据包" />
+                                    </StackPanel>
+                                </Button>
+                                <Button Click="ImportPackageBtn_Click">
+                                    <StackPanel Orientation="Horizontal">
+                                        <FontIcon FontSize="12" Glyph="&#xE8B5;" />
+                                        <TextBlock Margin="8,0,0,0" Text="导入数据包" />
+                                    </StackPanel>
+                                </Button>
+                            </StackPanel>
+                        </settings:SettingsCard>
                         <settings:SettingsCard Header="清除网页记录" Description="清空所有网页地址与域名统计，应用使用时长与窗口标题保留；此操作不可恢复">
                             <Button Click="ClearWebBtn_Click">
                                 <StackPanel Orientation="Horizontal">
@@ -232,7 +303,7 @@
                     BorderThickness="1"
                     CornerRadius="8">
                     <StackPanel Spacing="4">
-                        <TextBlock Style="{StaticResource BodyStrongTextBlockStyle}" Text="ScreenTime 1.3.3" />
+                        <TextBlock Style="{StaticResource BodyStrongTextBlockStyle}" Text="ScreenTime 1.3.4" />
                         <TextBlock Foreground="{ThemeResource TextFillColorSecondaryBrush}" Text="轻量电脑使用时长统计 · 仅本地记录，不联网、不打扰" />
                     </StackPanel>
                 </Border>

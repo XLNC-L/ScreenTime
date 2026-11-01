@@ -297,7 +297,8 @@ public sealed class WatcherService : IDisposable
             _fgSegment = null;
         }
 
-        if (_session.IsLocked || _session.IsSuspended || Win32.GetIdleSeconds() > _idleLimitSeconds)
+        if (ForegroundPolicy.ShouldPause(Win32.GetIdleSeconds(), _idleLimitSeconds,
+                _session.IsLocked, _session.IsSuspended))
         {
             CloseForeground();
             return;
@@ -370,8 +371,8 @@ public sealed class WatcherService : IDisposable
                 // 其他应用的标题只是个标签，而且不少应用标题会来回抖
                 //（"WorkBuddy AI"/"WorkBuddy"、"微信"/"Weixin"、带未读数的括号），
                 // 每抖一次就切分会把时间剁成 5 秒一条的碎片。
-                var splitForPage = siteChanged &&
-                    (now - _fgSegment.StartUtc).TotalSeconds >= MinSegmentSeconds;
+                var splitForPage = ForegroundPolicy.ShouldSplitForPage(
+                    siteChanged, (now - _fgSegment.StartUtc).TotalSeconds, MinSegmentSeconds);
 
                 if (splitForPage)
                 {

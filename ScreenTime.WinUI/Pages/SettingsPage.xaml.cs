@@ -54,6 +54,15 @@ public partial class SettingsPage : Page
             foreach (ComboBoxItem item in DetailRetentionBox.Items)
                 if ((string)item.Tag == detailRetention) DetailRetentionBox.SelectedItem = item;
 
+            // 目标与提醒：四个下拉共用一套读取
+            foreach (var box in new[] { GoalGameBox, GoalVideoBox, GoalSocialBox, LongReminderBox })
+            {
+                if (box.Tag is not string key) continue;
+                var value = db.GetSetting(key, "0");
+                foreach (ComboBoxItem item in box.Items)
+                    if ((string)item.Tag == value) box.SelectedItem = item;
+            }
+
             DbPathText.Text = "数据库位置：" + db.DbPath;
             // 只回显用户追加的部分：内置名单固定生效，不需要（也不应该）让用户重写
             ExcludeDomainsBox.Text = db.GetSetting(WebPrivacy.SettingKey, "");
@@ -233,6 +242,19 @@ public partial class SettingsPage : Page
         await RefreshHealthAsync();
     }
 
+    /// <summary>目标与连续使用提醒：四个下拉共用，设置键取自各自的 Tag。</summary>
+    private async void GoalBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_loading || sender is not ComboBox { SelectedItem: ComboBoxItem item } box ||
+            box.Tag is not string key) return;
+        var value = (string)item.Tag;
+        await RunDbAsync(() =>
+        {
+            App.Current.Database.SetSetting(key, value);
+            App.SignalSettingsChanged();   // 让 Agent 立刻按新阈值判断
+        });
+    }
+
     private async void RefreshHealthBtn_Click(object sender, RoutedEventArgs e) => await RefreshHealthAsync();
 
     private void OpenLogsBtn_Click(object sender, RoutedEventArgs e)
@@ -284,6 +306,10 @@ public partial class SettingsPage : Page
         HealthErrorText.Text = h.CollectErrorCount == 0
             ? "无"
             : $"{h.CollectErrorCount} 次 · {h.LastCollectError}";
+
+        HealthWarnText.Text = h.Warnings.Count == 0
+            ? "未发现异常"
+            : string.Join("\n", h.Warnings);
     }
 
     private static DateTime? ParseUtc(string raw)
@@ -345,6 +371,86 @@ public partial class SettingsPage : Page
         var folder = Path.GetDirectoryName(App.Current.Database.DbPath);
         if (folder != null)
             Process.Start(new ProcessStartInfo("explorer.exe", folder) { UseShellExecute = true });
+    }
+
+    private async void ExportPackageBtn_Click(object sender, RoutedEventArgs e)
+    {
+        var picker = new FileSavePicker();
+        picker.FileTypeChoices.Add("ScreenTime 数据包", new List<string> { ".zip" });
+        picker.SuggestedFileName = $"ScreenTime-数据包-{DateTime.Now:yyyyMMdd}";
+        WinRT.Interop.InitializeWithWindow.Initialize(picker, App.Current.MainWindowHandle);
+
+        var file = await picker.PickSaveFileAsync();
+        if (file == null) return;
+
+        try
+        {
+            var r = await System.Threading.Tasks.Task.Run(
+                () => App.Current.Database.ExportPackage(file.Path));
+            ShowInfoBar($"已导出 {r.Apps} 个应用、{r.Segments} 条明细到 {file.Name}。", InfoBarSeverity.Success);
+        }
+        catch (Exception ex)
+        {
+            ShowInfoBar("导出失败：" + ex.Message, InfoBarSeverity.Error);
+        }
+    }
+
+    private async void ImportPackageBtn_Click(object sender, RoutedEventArgs e)
+    {
+        var picker = new FileOpenPicker();
+        picker.FileTypeFilter.Add(".zip");
+        WinRT.Interop.InitializeWithWindow.Initialize(picker, App.Current.MainWindowHandle);
+
+        var file = await picker.PickSingleFileAsync();
+        if (file == null) return;
+
+        var confirm = new ContentDialog
+        {
+            XamlRoot = XamlRoot,
+            Title = "导入数据包",
+            Content = "当前库会先备份到 backups/，然后用数据包覆盖。导入完成后界面会自动刷新，建议再打开一次确认。",
+            PrimaryButtonText = "导入",
+            CloseButtonText = "取消"
+        };
+        if (await confirm.ShowAsync() != ContentDialogResult.Primary) return;
+
+        // 必须先停 Agent：它持有写连接，直接覆盖文件会被占用并可能留下脏页
+        await System.Threading.Tasks.Task.Run(StopAgent);
+        var result = await System.Threading.Tasks.Task.Run(
+            () => App.Current.Database.ImportPackage(file.Path));
+        await System.Threading.Tasks.Task.Run(StartAgent);
+
+        if (result.Ok)
+        {
+            ShowInfoBar($"已导入 {result.Apps} 个应用、{result.Segments} 条明细。原库备份：{result.BackupPath}",
+                InfoBarSeverity.Success);
+            await RefreshHealthAsync();
+            App.Current.RefreshInboxBadge();
+            App.Current.RefreshCurrentPage();
+        }
+        else
+        {
+            ShowInfoBar("导入失败：" + result.Error, InfoBarSeverity.Error);
+        }
+    }
+
+    private static void StopAgent()
+    {
+        foreach (var p in Process.GetProcessesByName("ScreenTime.Agent"))
+        {
+            try { p.Kill(); p.WaitForExit(3000); } catch { }
+        }
+    }
+
+    private static void StartAgent()
+    {
+        try
+        {
+            var exe = Path.Combine(AppContext.BaseDirectory, "ScreenTime.Agent.exe");
+            if (File.Exists(exe))
+                Process.Start(new ProcessStartInfo(exe) { UseShellExecute = true });
+        }
+        catch { }
     }
 
     private async void SaveExcludeDomainsBtn_Click(object sender, RoutedEventArgs e)

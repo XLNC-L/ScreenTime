@@ -30,6 +30,9 @@ public partial class WebPage : Page
     private Dictionary<string, string> _nameByProcess = new(StringComparer.OrdinalIgnoreCase);
     private int _days = 30;
 
+    /// <summary>所选范围起点是否已落在明细折叠期（时间线空态文案据此换说明）。</summary>
+    private bool _timelineFolded;
+
     /// <summary>搜索关键字：从 TextChanged 的 sender 取，避免 AutoSuggestBox.Text 的更新时序问题。</summary>
     private string _searchKeyword = "";
 
@@ -103,6 +106,8 @@ public partial class WebPage : Page
             var db = App.Current.Database;
             var to = DateTime.UtcNow;
             var from = to.AddDays(-days);
+            // 范围起点落在折叠期时，时间线没有明细可画，空态要说明原因
+            _timelineFolded = db.IsDayFolded(from.ToLocalTime());
 
             var (rows, timelineRows) = await System.Threading.Tasks.Task.Run(
                 () => (db.QueryWebPages(from, to), db.QueryWebTimeline(from, to)));
@@ -214,6 +219,9 @@ public partial class WebPage : Page
             .ToList();
 
         TimelineList.ItemsSource = items;
+        TimelineEmptyText.Text = _timelineFolded
+            ? "所选范围起点早于明细保留期：网页明细已折叠，仅保留按域名与标题的时长汇总。"
+            : "暂无网页时间线记录。";
         TimelineEmptyText.Visibility = items.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
     }
 

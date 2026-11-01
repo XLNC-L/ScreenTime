@@ -190,7 +190,7 @@ ScreenTime.WinUI/           界面进程
 dotnet test ScreenTime.sln -c Release
 ```
 
-151 个用例，覆盖 `ScreenTime.Core` 的纯逻辑：
+157 个用例，覆盖 `ScreenTime.Core` 的纯逻辑：
 
 - **统计口径**（`StatsService`）：区间并集（重叠 / 嵌套 / 相邻 / 乱序 / 倒序 / 空）、
   时长格式化（0、秒级、分钟级、小时级、NaN、Infinity、超大值）
@@ -216,6 +216,7 @@ dotnet test ScreenTime.sln -c Release
   删除前自动备份到 `%AppData%\ScreenTime\backups\`（保留最近 3 份）。折叠按日快照固化，
   之后改分类或忽略不会回溯修改历史汇总。
 - **窗口切换次数从 v1.3.2 开始统计**：更早的历史没有这部分数据，历史页会显示「还没有切换记录」。
+- **目标与提醒只在界面开着时弹出**：Agent 只写标记，界面关着时不会打扰，下次打开会在下一次轮询时提示。
 - 单文件发布未启用：WinUI 3 下限制较多，当前是 279 个文件 / 95 MB 的框架依赖部署。
 - 数据库为单机单实例，无多设备同步（这是设计取舍，不是缺陷）。
 

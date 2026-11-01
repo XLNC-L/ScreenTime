@@ -232,6 +232,9 @@ public partial class MainWindow : Window
     /// <summary>轮询 Agent 写入的待标注片段（settings.pending_purpose），弹出用途选择。</summary>
     private void PollPendingPurpose()
     {
+        // 提醒优先：Agent 写了 pending_reminder 就弹一次，处理完再轮到用途标注
+        if (!ReminderTip.IsOpen && TryShowReminder()) return;
+
         // Tip 已开着就不重复弹，避免打断正在做的选择
         if (PurposeTip.IsOpen) return;
         try
@@ -263,6 +266,51 @@ public partial class MainWindow : Window
     {
         // 保持默认用途，不做修改
         ClearPendingPurpose();
+    }
+
+    /// <summary>读取 Agent 写的 pending_reminder（long|应用|分钟 或 goal|分类|已用|目标）。</summary>
+    private bool TryShowReminder()
+    {
+        try
+        {
+            var raw = App.Current.Database.GetSetting("pending_reminder", "");
+            if (string.IsNullOrEmpty(raw)) return false;
+
+            var parts = raw.Split('|');
+            ReminderTip.Subtitle = parts[0] switch
+            {
+                "long" when parts.Length >= 3 =>
+                    $"「{parts[1]}」已经连续使用 {parts[2]} 分钟，要不要起来活动一下？",
+                "goal" when parts.Length >= 4 =>
+                    $"{parts[1]}今天已用 {parts[2]} 分钟，超过每日目标 {parts[3]} 分钟。",
+                _ => ""
+            };
+            if (ReminderTip.Subtitle.Length == 0) return false;
+
+            ReminderTip.IsOpen = true;
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private void ReminderTip_Ok(TeachingTip sender, object args) => ClearReminder();
+
+    private void ReminderTip_Snooze(TeachingTip sender, object args)
+    {
+        try
+        {
+            App.Current.Database.SetSetting("reminder_snooze_day", DateTime.Now.ToString("yyyy-MM-dd"));
+        }
+        catch { }
+        ClearReminder();
+    }
+
+    private static void ClearReminder()
+    {
+        try { App.Current.Database.SetSetting("pending_reminder", ""); } catch { }
     }
 
     private static void ClearPendingPurpose()

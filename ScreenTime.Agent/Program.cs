@@ -161,6 +161,56 @@ internal static class Program
         catch { }
     }
 
+    /// <summary>
+    /// 目标与提醒：只在本地写标记（settings.pending_reminder），由 UI 进程轮询后弹非模态提示。
+    /// 同类提醒每天最多一次；用户点「今天不再提醒」后当天全部跳过。
+    /// </summary>
+    private static void CheckReminders()
+    {
+        try
+        {
+            var today = DateTime.Now.ToString("yyyy-MM-dd");
+            if (_db.GetSetting("reminder_snooze_day", "") == today) return;
+
+            // 连续使用超时：最后一条前台片段还在延续（结束时间离现在 ≤ 2 分钟）才算「正在用」
+            if (int.TryParse(_db.GetSetting("reminder_long_minutes", "0"), out var longMin) && longMin > 0)
+            {
+                var cur = _db.QueryCurrentForeground();
+                if (cur is not null && (DateTime.UtcNow - cur.EndUtc).TotalMinutes <= 2)
+                {
+                    var used = (int)(DateTime.UtcNow - cur.StartUtc).TotalMinutes;
+                    if (used >= longMin && _db.GetSetting("reminder_last_long", "") != $"{cur.AppId}:{today}")
+                    {
+                        _db.SetSetting("pending_reminder", $"long|{cur.AppName}|{used}");
+                        _db.SetSetting("reminder_last_long", $"{cur.AppId}:{today}");
+                    }
+                }
+            }
+
+            // 每日目标：按分类看今天的累计时长
+            var todayStart = DateTime.Today.ToUniversalTime();
+            var apps = _db.QueryAppUsage(todayStart, DateTime.UtcNow);
+            CheckGoal(apps, "游戏", "goal_game_minutes", today);
+            CheckGoal(apps, "影音与娱乐", "goal_video_minutes", today);
+            CheckGoal(apps, "通讯与协作", "goal_social_minutes", today);
+        }
+        catch (Exception ex) { WriteError(ex); }
+    }
+
+    private static void CheckGoal(List<AppUsageRow> apps, string category, string settingKey, string today)
+    {
+        if (!int.TryParse(_db.GetSetting(settingKey, "0"), out var limit) || limit <= 0) return;
+
+        var used = apps.Where(a => a.Category == category).Sum(a => a.TotalSeconds) / 60.0;
+        if (used < limit) return;
+
+        // 每个分类每天只提醒一次
+        if (_db.GetSetting($"reminder_last_goal_{category}", "") == today) return;
+
+        _db.SetSetting("pending_reminder", $"goal|{category}|{(int)used}|{limit}");
+        _db.SetSetting($"reminder_last_goal_{category}", today);
+    }
+
     private static void Run(string[] args)
     {
         _db = new Database(CommandLineValue(args, "--db="));
@@ -191,6 +241,10 @@ internal static class Program
         // 明细保留：每天最多跑一次，超过保留期的明细折叠成日汇总后再删除
         var pruneTimer = new System.Threading.Timer(_ => RunDailyMaintenance(),
             null, TimeSpan.FromSeconds(60), TimeSpan.FromMinutes(30));
+
+        // 目标与提醒：连续使用超时、每日分类目标，只写标记由 UI 弹非模态提示
+        var reminderTimer = new System.Threading.Timer(_ => CheckReminders(),
+            null, TimeSpan.FromMinutes(1), TimeSpan.FromMinutes(5));
 
         // 浏览器历史回填：v1.2.0 起从 UI 进程搬到这里，UI 关掉也能继续补网页地址。
         // 内部自带 30 分钟节拍与「回填开关」判断，关闭时自动跳过。
@@ -226,6 +280,7 @@ internal static class Program
         try { settingsTimer.Dispose(); } catch { }
         try { heartbeatTimer.Dispose(); } catch { }
         try { pruneTimer.Dispose(); } catch { }
+        try { reminderTimer.Dispose(); } catch { }
         try { _historyImport.Dispose(); } catch { }
         try { _watcher.Dispose(); } catch { }
         try { _tray.Dispose(); } catch { }
