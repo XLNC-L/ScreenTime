@@ -268,4 +268,110 @@ public class DatabaseTests : IDisposable
         Assert.Equal("可见应用", rows[0].AppName);
         Assert.Equal(10, rows[0].TotalSeconds, 3);
     }
+
+    // ---------- 明细折叠与保留（v1.3.0） ----------
+
+    [Fact]
+    public void FoldDetailsBefore_DeletesDetailsButKeepsDuration()
+    {
+        var id = NewApp();
+        AddSeg(id, 0, 10);
+        AddSeg(id, 100, 120);
+
+        var before = _db.QueryAppUsage(Base, Base.AddSeconds(200)).Sum(a => a.TotalSeconds);
+        var listBefore = _db.QueryAppUsage(Base, Base.AddSeconds(200));
+        Assert.Single(listBefore);
+        Assert.Equal(30, before, 1);
+
+        var report = _db.FoldDetailsBefore("2026-01-02");
+        Assert.Null(report.Error);
+        Assert.Equal(1, report.Days);
+        Assert.Equal(2, report.DeletedSegments);
+
+        Assert.Empty(_db.QuerySegments(Base, Base.AddSeconds(200)));
+        var after = _db.QueryAppUsage(Base, Base.AddSeconds(200)).Sum(a => a.TotalSeconds);
+        Assert.Equal(before, after, 1);
+    }
+
+    [Fact]
+    public void FoldDetailsBefore_KeepsPurposeUsage()
+    {
+        var id = NewApp();
+        _db.InsertSegment(id, "foreground", Base, Base.AddSeconds(30),
+            "", "2026-01-01", "工作学习", "", "");
+
+        var before = _db.QueryPurposeUsage(Base, Base.AddSeconds(60));
+        var report = _db.FoldDetailsBefore("2026-01-02");
+        Assert.Null(report.Error);
+
+        var after = _db.QueryPurposeUsage(Base, Base.AddSeconds(60));
+        Assert.Equal(before.Count, after.Count);
+        Assert.Equal(before.Sum(x => x.TotalSeconds), after.Sum(x => x.TotalSeconds), 1);
+    }
+
+    [Fact]
+    public void FoldDetailsBefore_KeepsDomainDropsTitleAndUrl()
+    {
+        var chrome = _db.GetOrCreateApp(@"C:\B\chrome.exe", "chrome", "Chrome", "", "浏览与资讯");
+        _db.InsertSegment(chrome, "foreground", Base, Base.AddSeconds(30),
+            "标题", "2026-01-01", "", "example.com", "https://example.com/a");
+
+        var report = _db.FoldDetailsBefore("2026-01-02");
+        Assert.Null(report.Error);
+
+        var page = Assert.Single(_db.QueryWebPages(Base, Base.AddSeconds(60)));
+        Assert.Equal("example.com", page.Site);
+        Assert.Equal("", page.Title);
+        Assert.Equal("", page.Url);
+        Assert.Equal(30, page.Seconds, 1);
+    }
+
+    [Fact]
+    public void FoldDetailsBefore_SecondRunIsNoOp()
+    {
+        var id = NewApp();
+        AddSeg(id, 0, 10);
+        var first = _db.FoldDetailsBefore("2026-01-02");
+        Assert.Equal(1, first.DeletedSegments);
+
+        var second = _db.FoldDetailsBefore("2026-01-02");
+        Assert.Equal(0, second.DeletedSegments);
+        Assert.Null(second.Error);
+
+        // 重复折叠不能把已汇总的时长翻倍
+        var daily = _db.QueryDailySeconds(new DateTime(2026, 1, 1), 1);
+        Assert.Equal(10, daily["2026-01-01"], 1);
+    }
+
+    [Fact]
+    public void QueryDailySeconds_MergesDetailsAndFoldedDays()
+    {
+        var id = NewApp();
+        AddSeg(id, 0, 10);                                   // 2026-01-01，会被折叠
+        _db.FoldDetailsBefore("2026-01-02");
+
+        // 折叠之后又来了新的一天（2026-01-02）的明细
+        _db.InsertSegment(id, "foreground", Base.AddDays(1), Base.AddDays(1).AddSeconds(20),
+            "", "2026-01-02", "", "", "");
+
+        var daily = _db.QueryDailySeconds(new DateTime(2026, 1, 1), 2);
+        Assert.Equal(10, daily["2026-01-01"], 1);
+        Assert.Equal(20, daily["2026-01-02"], 1);
+    }
+
+    [Fact]
+    public void FoldDetailsBefore_SkipsIgnoredApp()
+    {
+        var visible = NewApp("vis2", "可见", @"C:\V\vis2.exe");
+        var hidden = NewApp("hid2", "忽略", @"C:\H\hid2.exe");
+        AddSeg(visible, 0, 10);
+        AddSeg(hidden, 0, 10);
+        _db.SetAppIgnored(hidden, true);
+
+        var report = _db.FoldDetailsBefore("2026-01-02");
+        Assert.Null(report.Error);
+
+        var daily = _db.QueryDailySeconds(new DateTime(2026, 1, 1), 1);
+        Assert.Equal(10, daily["2026-01-01"], 1);   // 忽略的应用不计入当天总时长
+    }
 }

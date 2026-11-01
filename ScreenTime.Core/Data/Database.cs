@@ -222,6 +222,41 @@ public sealed class Database
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL
             );
+
+            -- 明细折叠后的日汇总（v1.3.0）：超过保留期的片段会被折叠到这几张表再删除。
+            -- 口径与明细查询保持一致：前台/音频各自并集，total 是两者的并集。
+            CREATE TABLE IF NOT EXISTS daily_totals (
+                day TEXT PRIMARY KEY,
+                seconds REAL NOT NULL DEFAULT 0,
+                segments INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE TABLE IF NOT EXISTS daily_app_totals (
+                day TEXT NOT NULL,
+                app_id INTEGER NOT NULL,
+                purpose TEXT NOT NULL DEFAULT '',
+                fg REAL NOT NULL DEFAULT 0,
+                au REAL NOT NULL DEFAULT 0,
+                total REAL NOT NULL DEFAULT 0,
+                segments INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (day, app_id, purpose)
+            );
+            CREATE INDEX IF NOT EXISTS idx_daily_app_day ON daily_app_totals(day);
+            -- 用途分布是「跨应用并集」口径，必须单独存，不能拿 daily_app_totals 求和
+            CREATE TABLE IF NOT EXISTS daily_purpose_totals (
+                day TEXT NOT NULL,
+                purpose TEXT NOT NULL DEFAULT '',
+                seconds REAL NOT NULL DEFAULT 0,
+                PRIMARY KEY (day, purpose)
+            );
+            CREATE TABLE IF NOT EXISTS daily_site_totals (
+                day TEXT NOT NULL,
+                app_id INTEGER NOT NULL,
+                site TEXT NOT NULL DEFAULT '',
+                seconds REAL NOT NULL DEFAULT 0,
+                segments INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (day, app_id, site)
+            );
+            CREATE INDEX IF NOT EXISTS idx_daily_site_day ON daily_site_totals(day);
             """;
         cmd.ExecuteNonQuery();
         // 旧库补列必须在任何引用这些列的 SQL 之前完成：
@@ -1263,16 +1298,52 @@ public sealed class Database
             }
         }
 
-        // 3) 聚合
-        var rows = new List<AppUsageRow>();
+        // 3) 聚合明细
+        var totals = new Dictionary<int, (double Fg, double Au, double Total)>();
         foreach (var (resolvedId, b) in buckets)
         {
             var info = appInfo[resolvedId];
             var fg = b.Fg.Sum(x => (x.E - x.S).TotalSeconds);
             var au = b.Au.Sum(x => (x.E - x.S).TotalSeconds);
             var total = StatsService.UnionSeconds(b.Fg.Concat(b.Au).ToList());
-            rows.Add(new AppUsageRow(resolvedId, info.AppName, info.ProcessName,
-                info.Category, fg, au, total));
+            totals[resolvedId] = (fg, au, total);
+        }
+
+        // 4) 叠加日汇总：早于保留截止日的明细已经不存在，只留了日粒度秒数。
+        //    这里不看当前保留设置——就算用户后来改回「永久保留」，之前折叠过的历史也要能查出来。
+        //    日汇总是整天计入，若查询起点落在某天中间，那一天会按整天算（最多差不到一天）。
+        using (var c = Open())
+        using (var cmd = c.CreateCommand())
+        {
+            cmd.CommandText = """
+                SELECT app_id, fg, au, total FROM daily_app_totals
+                WHERE day >= $f AND day < $t
+                """;
+            cmd.Parameters.AddWithValue("$f", LocalDayKey(fromUtc));
+            cmd.Parameters.AddWithValue("$t", LocalDayExclusive(toUtc));
+            using var r = cmd.ExecuteReader();
+            while (r.Read())
+            {
+                var srcId = r.GetInt32(0);
+                if (!appInfo.TryGetValue(srcId, out var src)) continue;
+                var resolvedId = src.MergedInto != 0 && appInfo.ContainsKey(src.MergedInto)
+                    ? src.MergedInto : srcId;
+                var target = appInfo[resolvedId];
+                if (src.Ignored != 0 || target.Ignored != 0) continue;
+
+                var cur = totals.TryGetValue(resolvedId, out var t) ? t : (Fg: 0.0, Au: 0.0, Total: 0.0);
+                totals[resolvedId] = (cur.Fg + r.GetDouble(1),
+                    cur.Au + r.GetDouble(2), cur.Total + r.GetDouble(3));
+            }
+        }
+
+        // 5) 输出
+        var rows = new List<AppUsageRow>();
+        foreach (var (id, t) in totals)
+        {
+            var info = appInfo[id];
+            rows.Add(new AppUsageRow(id, info.AppName, info.ProcessName,
+                info.Category, t.Fg, t.Au, t.Total));
         }
         return rows;
     }
@@ -1319,9 +1390,37 @@ public sealed class Database
             }
         }
 
-        return buckets.OrderByDescending(x => x.Key)
-            .Select(x => new AppDailyUsageRow(x.Key.ToString("yyyy-MM-dd"), StatsService.UnionSeconds(x.Value)))
-            .Where(x => x.Seconds > 0)
+        var result = buckets
+            .Select(x => (Day: x.Key, Seconds: StatsService.UnionSeconds(x.Value)))
+            .ToDictionary(x => x.Day, x => x.Seconds);
+
+        // 叠加日汇总（同一天里被合并的应用也累加到同一 effective 应用上）
+        using (var c2 = Open())
+        using (var cmd2 = c2.CreateCommand())
+        {
+            var inList2 = string.Join(",", ids.Select((_, i) => $"$a{i}"));
+            cmd2.CommandText = $"""
+                SELECT day, SUM(total) FROM daily_app_totals
+                WHERE app_id IN ({inList2}) AND day >= $f AND day < $t
+                GROUP BY day
+                """;
+            for (var i = 0; i < ids.Count; i++) cmd2.Parameters.AddWithValue($"$a{i}", ids[i]);
+            cmd2.Parameters.AddWithValue("$f", LocalDayKey(fromUtc));
+            cmd2.Parameters.AddWithValue("$t", LocalDayExclusive(toUtc));
+            using var r2 = cmd2.ExecuteReader();
+            while (r2.Read())
+            {
+                var day = r2.GetString(0);
+                var key = day.Length > 0 ? DateTime.Parse(day) : DateTime.MinValue;
+                result.TryGetValue(key, out var sec);
+                result[key] = sec + r2.GetDouble(1);
+            }
+        }
+
+        return result
+            .Where(x => x.Value > 0)
+            .OrderByDescending(x => x.Key)
+            .Select(x => new AppDailyUsageRow(x.Key.ToString("yyyy-MM-dd"), x.Value))
             .ToList();
     }
 
@@ -1464,8 +1563,31 @@ public sealed class Database
             }
         }
 
-        return byPurpose
-            .Select(kv => (kv.Key, StatsService.UnionSeconds(kv.Value)))
+        var totals = byPurpose.ToDictionary(kv => kv.Key, kv => StatsService.UnionSeconds(kv.Value));
+
+        // 叠加日汇总：用途是跨应用并集口径，所以读 daily_purpose_totals 而不是 app 汇总
+        using (var c2 = Open())
+        using (var cmd2 = c2.CreateCommand())
+        {
+            cmd2.CommandText = """
+                SELECT purpose, SUM(seconds) FROM daily_purpose_totals
+                WHERE day >= $f AND day < $t
+                GROUP BY purpose
+                """;
+            cmd2.Parameters.AddWithValue("$f", LocalDayKey(fromUtc));
+            cmd2.Parameters.AddWithValue("$t", LocalDayExclusive(toUtc));
+            using var r2 = cmd2.ExecuteReader();
+            while (r2.Read())
+            {
+                var p = r2.GetString(0);
+                totals.TryGetValue(p, out var sec);
+                totals[p] = sec + r2.GetDouble(1);
+            }
+        }
+
+        return totals
+            .Where(kv => kv.Value > 0)
+            .Select(kv => (kv.Key, kv.Value))
             .OrderByDescending(x => x.Item2)
             .ToList();
     }
@@ -1585,6 +1707,32 @@ public sealed class Database
         foreach (var ((appId, site, title, url), seconds) in merged)
             list.Add(new WebPageRow(site, title, url, map[appId].AppName,
                 map[appId].ProcessName, seconds));
+
+        // 叠加已折叠的域名汇总：旧数据只留域名与时长，标题/地址已经随明细一起清掉
+        using (var c2 = Open())
+        using (var cmd2 = c2.CreateCommand())
+        {
+            cmd2.CommandText = """
+                SELECT app_id, site, SUM(seconds) FROM daily_site_totals
+                WHERE day >= $f AND day < $t
+                GROUP BY app_id, site
+                """;
+            cmd2.Parameters.AddWithValue("$f", LocalDayKey(fromUtc));
+            cmd2.Parameters.AddWithValue("$t", LocalDayExclusive(toUtc));
+            using var r2 = cmd2.ExecuteReader();
+            while (r2.Read())
+            {
+                var srcId = r2.GetInt32(0);
+                if (!map.TryGetValue(srcId, out var src)) continue;
+                var effective = ResolveEffectiveAppId(map, srcId);
+                if (src.Ignored != 0 || map[effective].Ignored != 0) continue;
+                if (!BrowserCatalog.IsBrowser(map[effective].ProcessName)) continue;
+
+                list.Add(new WebPageRow(r2.GetString(1), "", "", map[effective].AppName,
+                    map[effective].ProcessName, r2.GetDouble(2)));
+            }
+        }
+
         return list;
     }
 
@@ -1776,6 +1924,368 @@ public sealed class Database
         cmd.Parameters.AddWithValue("$b", ToIso(beforeUtc));
         cmd.ExecuteNonQuery();
     }
+
+    /// <summary>
+    /// 清除全部时长记录（明细 + 已折叠的日汇总），保留应用分类与设置。
+    /// 只删 usage_segments 是不够的：折叠过的历史还留在汇总表里，必须一起清。
+    /// </summary>
+    public void ClearAllUsage()
+    {
+        using var c = Open();
+        using var cmd = c.CreateCommand();
+        cmd.CommandText = """
+            DELETE FROM usage_segments;
+            DELETE FROM daily_totals;
+            DELETE FROM daily_app_totals;
+            DELETE FROM daily_purpose_totals;
+            DELETE FROM daily_site_totals;
+            """;
+        cmd.ExecuteNonQuery();
+    }
+
+    // ---------------- 明细保留与折叠（v1.3.0） ----------------
+
+    public const string DetailRetentionKey = "detail_retention_days";
+
+    /// <summary>明细保留天数；0 表示永久保留。默认 60 天。</summary>
+    public int DetailRetentionDays()
+    {
+        var raw = GetSetting(DetailRetentionKey, "60") ?? "60";
+        return int.TryParse(raw, out var d) && d >= 0 ? d : 60;
+    }
+
+    /// <summary>折叠截止日（本地日期字符串，早于它的明细会被折叠）。null 表示永久保留。</summary>
+    public string? DetailCutoffDay()
+    {
+        var days = DetailRetentionDays();
+        return days <= 0 ? null : DateTime.Now.Date.AddDays(-days).ToString("yyyy-MM-dd");
+    }
+
+    public sealed record PruneReport(int Days, int AppRows, int SiteRows,
+        double Seconds, int DeletedSegments, string? Error = null);
+
+    /// <summary>
+    /// 把 day 早于 <paramref name="cutoffDay"/> 的明细折叠成日汇总，再删除明细。
+    ///
+    /// 折叠按片段「所在日」整段计入，不跨日拆分：跨午夜的片段只有零星几条，
+    /// 拆到第二天会和仍在明细里的当天数据重复计数，整段归日更安全。
+    /// 写入与删除在同一个事务里，失败即回滚，不会出现「明细没了、汇总也没有」。
+    /// </summary>
+    public PruneReport FoldDetailsBefore(string cutoffDay)
+    {
+        var appBuckets = new Dictionary<(string Day, int AppId, string Purpose),
+            (List<(DateTime S, DateTime E)> Fg, List<(DateTime S, DateTime E)> Au)>();
+        var siteBuckets = new Dictionary<(string Day, int AppId, string Site),
+            List<(DateTime S, DateTime E)>>();
+        var purposeBuckets = new Dictionary<(string Day, string Purpose), List<(DateTime S, DateTime E)>>();
+        var dayBuckets = new Dictionary<string, List<(DateTime S, DateTime E)>>();
+        var count = 0;
+
+        using var c = Open();
+        var appInfo = LoadAppInfo(c);
+
+        using (var cmd = c.CreateCommand())
+        {
+            cmd.CommandText = """
+                SELECT app_id, kind, start_ts, end_ts, purpose, site, day
+                FROM usage_segments
+                WHERE day < $d
+                """;
+            cmd.Parameters.AddWithValue("$d", cutoffDay);
+            using var r = cmd.ExecuteReader();
+            while (r.Read())
+            {
+                count++;
+                var appId = r.GetInt32(0);
+                var kind = r.GetString(1);
+                var start = ParseIso(r.GetString(2));
+                var end = ParseIso(r.GetString(3));
+                if (end <= start) continue;
+
+                var day = r.GetString(6);
+                // 被忽略的应用本来就不进统计，折叠时直接丢弃，与明细查询口径一致
+                if (!appInfo.TryGetValue(appId, out var info)) continue;
+                var effective = info.MergedInto != 0 && appInfo.ContainsKey(info.MergedInto)
+                    ? info.MergedInto : appId;
+                if (info.Ignored != 0 || appInfo[effective].Ignored != 0) continue;
+
+                var purpose = PurposeService.Resolve(r.GetString(4), appInfo[effective].Category);
+                var interval = (start, end);
+
+                var key = (day, appId, purpose);
+                if (!appBuckets.TryGetValue(key, out var b))
+                    appBuckets[key] = b = (new List<(DateTime, DateTime)>(), new List<(DateTime, DateTime)>());
+                if (kind == "foreground") b.Fg.Add(interval); else b.Au.Add(interval);
+
+                if (!dayBuckets.TryGetValue(day, out var dl))
+                    dayBuckets[day] = dl = new List<(DateTime, DateTime)>();
+                dl.Add(interval);
+
+                var pk = (day, purpose);
+                if (!purposeBuckets.TryGetValue(pk, out var pl))
+                    purposeBuckets[pk] = pl = new List<(DateTime, DateTime)>();
+                pl.Add(interval);
+
+                var site = r.GetString(5);
+                if (kind == "foreground" && !string.IsNullOrWhiteSpace(site))
+                {
+                    var sk = (day, appId, site);
+                    if (!siteBuckets.TryGetValue(sk, out var sl))
+                        siteBuckets[sk] = sl = new List<(DateTime, DateTime)>();
+                    sl.Add(interval);
+                }
+            }
+        }
+
+        if (count == 0) return new PruneReport(0, 0, 0, 0, 0);
+
+        using var tx = c.BeginTransaction();
+        try
+        {
+            foreach (var (day, intervals) in dayBuckets)
+            {
+                using var del = c.CreateCommand();
+                del.Transaction = tx;
+                del.CommandText = """
+                    DELETE FROM daily_totals WHERE day=$d;
+                    DELETE FROM daily_app_totals WHERE day=$d;
+                    DELETE FROM daily_purpose_totals WHERE day=$d;
+                    DELETE FROM daily_site_totals WHERE day=$d;
+                    """;
+                del.Parameters.AddWithValue("$d", day);
+                del.ExecuteNonQuery();
+
+                using var ins = c.CreateCommand();
+                ins.Transaction = tx;
+                ins.CommandText = "INSERT INTO daily_totals(day, seconds, segments) VALUES($d,$s,$n)";
+                ins.Parameters.AddWithValue("$d", day);
+                ins.Parameters.AddWithValue("$s", StatsService.UnionSeconds(intervals));
+                ins.Parameters.AddWithValue("$n", intervals.Count);
+                ins.ExecuteNonQuery();
+            }
+
+            foreach (var ((day, appId, purpose), b) in appBuckets)
+            {
+                var fg = StatsService.UnionSeconds(b.Fg);
+                var au = StatsService.UnionSeconds(b.Au);
+                var total = StatsService.UnionSeconds(b.Fg.Concat(b.Au).ToList());
+
+                using var ins = c.CreateCommand();
+                ins.Transaction = tx;
+                ins.CommandText = """
+                    INSERT INTO daily_app_totals(day, app_id, purpose, fg, au, total, segments)
+                    VALUES($d,$a,$p,$fg,$au,$t,$n)
+                    """;
+                ins.Parameters.AddWithValue("$d", day);
+                ins.Parameters.AddWithValue("$a", appId);
+                ins.Parameters.AddWithValue("$p", purpose);
+                ins.Parameters.AddWithValue("$fg", fg);
+                ins.Parameters.AddWithValue("$au", au);
+                ins.Parameters.AddWithValue("$t", total);
+                ins.Parameters.AddWithValue("$n", b.Fg.Count + b.Au.Count);
+                ins.ExecuteNonQuery();
+            }
+
+            foreach (var ((day, purpose), intervals) in purposeBuckets)
+            {
+                using var ins = c.CreateCommand();
+                ins.Transaction = tx;
+                ins.CommandText = "INSERT INTO daily_purpose_totals(day, purpose, seconds) VALUES($d,$p,$s)";
+                ins.Parameters.AddWithValue("$d", day);
+                ins.Parameters.AddWithValue("$p", purpose);
+                ins.Parameters.AddWithValue("$s", StatsService.UnionSeconds(intervals));
+                ins.ExecuteNonQuery();
+            }
+
+            foreach (var ((day, appId, site), intervals) in siteBuckets)
+            {
+                using var ins = c.CreateCommand();
+                ins.Transaction = tx;
+                ins.CommandText = "INSERT INTO daily_site_totals(day, app_id, site, seconds, segments) VALUES($d,$a,$s,$sec,$n)";
+                ins.Parameters.AddWithValue("$d", day);
+                ins.Parameters.AddWithValue("$a", appId);
+                ins.Parameters.AddWithValue("$s", site);
+                ins.Parameters.AddWithValue("$sec", StatsService.UnionSeconds(intervals));
+                ins.Parameters.AddWithValue("$n", intervals.Count);
+                ins.ExecuteNonQuery();
+            }
+
+            using (var del = c.CreateCommand())
+            {
+                del.Transaction = tx;
+                del.CommandText = "DELETE FROM usage_segments WHERE day < $d";
+                del.Parameters.AddWithValue("$d", cutoffDay);
+                del.ExecuteNonQuery();
+            }
+
+            // 校验：演示库里的汇总秒数必须覆盖折叠掉的明细，否则整批回滚
+            using (var chk = c.CreateCommand())
+            {
+                chk.Transaction = tx;
+                chk.CommandText = "SELECT COALESCE(SUM(seconds),0) FROM daily_totals WHERE day < $d";
+                chk.Parameters.AddWithValue("$d", cutoffDay);
+                var folded = Convert.ToDouble(chk.ExecuteScalar());
+                var expected = dayBuckets.Values.Sum(StatsService.UnionSeconds);
+                if (Math.Abs(folded - expected) > 1.0)
+                    throw new InvalidOperationException($"汇总校验失败：{folded:0.###} != {expected:0.###}");
+            }
+
+            tx.Commit();
+        }
+        catch (Exception ex)
+        {
+            try { tx.Rollback(); } catch { }
+            return new PruneReport(0, 0, 0, 0, 0, ex.Message);
+        }
+
+        var seconds = dayBuckets.Values.Sum(StatsService.UnionSeconds);
+        return new PruneReport(dayBuckets.Count, appBuckets.Count, siteBuckets.Count,
+            seconds, count);
+    }
+
+    /// <summary>某个本地日之前是否已经只有汇总没有明细（供界面提示「仅保留汇总」）。</summary>
+    public bool IsDayFolded(DateTime localDay)
+    {
+        var cutoff = DetailCutoffDay();
+        return cutoff != null && localDay.ToString("yyyy-MM-dd").CompareTo(cutoff) < 0;
+    }
+
+    /// <summary>
+    /// 按本地日取每天的总秒数（明细并集 + 已折叠的日汇总）。
+    /// 历史页的总时长、每日柱状都走这里，避免跨保留期时出现「某天突然为 0」。
+    /// </summary>
+    public Dictionary<string, double> QueryDailySeconds(DateTime fromDay, int days)
+    {
+        var result = new Dictionary<string, double>();
+        if (days <= 0) return result;
+
+        var fromKey = fromDay.ToString("yyyy-MM-dd");
+        var toKey = fromDay.AddDays(days).ToString("yyyy-MM-dd");
+
+        // 明细部分：逐日区间并集
+        var buckets = new Dictionary<string, List<(DateTime S, DateTime E)>>();
+        using (var c = Open())
+        using (var cmd = c.CreateCommand())
+        {
+            cmd.CommandText = """
+                SELECT day, start_ts, end_ts FROM usage_segments
+                WHERE day >= $f AND day < $t
+                """;
+            cmd.Parameters.AddWithValue("$f", fromKey);
+            cmd.Parameters.AddWithValue("$t", toKey);
+            using var r = cmd.ExecuteReader();
+            while (r.Read())
+            {
+                var day = r.GetString(0);
+                var start = ParseIso(r.GetString(1));
+                var end = ParseIso(r.GetString(2));
+                if (end <= start) continue;
+                if (!buckets.TryGetValue(day, out var list))
+                    buckets[day] = list = new List<(DateTime, DateTime)>();
+                list.Add((start, end));
+            }
+        }
+        foreach (var (day, list) in buckets)
+            result[day] = StatsService.UnionSeconds(list);
+
+        // 汇总部分：折叠时明细是整天删的，所以同一天不会既有明细又有汇总
+        using (var c = Open())
+        using (var cmd = c.CreateCommand())
+        {
+            cmd.CommandText = "SELECT day, seconds FROM daily_totals WHERE day >= $f AND day < $t";
+            cmd.Parameters.AddWithValue("$f", fromKey);
+            cmd.Parameters.AddWithValue("$t", toKey);
+            using var r = cmd.ExecuteReader();
+            while (r.Read())
+            {
+                var day = r.GetString(0);
+                result.TryGetValue(day, out var sec);
+                result[day] = sec + r.GetDouble(1);
+            }
+        }
+
+        return result;
+    }
+
+    /// <summary>回收文件空间：折叠删除后可调用，避免数据库只增不减。</summary>
+    public void Vacuum()
+    {
+        using var c = Open();
+        using var cmd = c.CreateCommand();
+        cmd.CommandText = "PRAGMA wal_checkpoint(TRUNCATE); VACUUM;";
+        cmd.ExecuteNonQuery();
+    }
+
+    /// <summary>诊断页数据：采集是否在跑、库多大、有没有异常。全部只读本地文件与库。</summary>
+    public sealed record HealthSnapshot(
+        long DbBytes,
+        string LastSegmentEnd,
+        int SegmentCount,
+        int AppCount,
+        int FoldedDays,
+        string AgentHeartbeat,
+        string AgentStartedAt,
+        int AgentRestartCount,
+        long CollectErrorCount,
+        string LastCollectError,
+        string LastForegroundUtc,
+        string LastAudioUtc,
+        int RetentionDays,
+        string? CutoffDay);
+
+    public HealthSnapshot GetHealth()
+    {
+        long size = 0;
+        try { if (File.Exists(DbPath)) size = new FileInfo(DbPath).Length; } catch { }
+
+        string lastEnd = "";
+        int segments = 0, apps = 0, folded = 0;
+        using (var c = Open())
+        {
+            using var cmd = c.CreateCommand();
+            cmd.CommandText = """
+                SELECT COALESCE(MAX(end_ts), ''), (SELECT COUNT(*) FROM usage_segments),
+                       (SELECT COUNT(*) FROM apps), (SELECT COUNT(*) FROM daily_totals)
+                FROM usage_segments;
+                """;
+            using var r = cmd.ExecuteReader();
+            if (r.Read())
+            {
+                lastEnd = r.GetString(0);
+                segments = r.GetInt32(1);
+                apps = r.GetInt32(2);
+                folded = r.GetInt32(3);
+            }
+        }
+
+        return new HealthSnapshot(
+            size,
+            lastEnd,
+            segments,
+            apps,
+            folded,
+            GetSetting("agent_heartbeat", "") ?? "",
+            GetSetting("agent_started_at", "") ?? "",
+            int.TryParse(GetSetting("agent_restart_count", "0"), out var rc) ? rc : 0,
+            long.TryParse(GetSetting("collect_error_count", "0"), out var ec) ? ec : 0,
+            GetSetting("collect_last_error", "") ?? "",
+            GetSetting("collect_last_foreground_utc", "") ?? "",
+            GetSetting("collect_last_audio_utc", "") ?? "",
+            DetailRetentionDays(),
+            DetailCutoffDay());
+    }
+
+    /// <summary>UTC 时间对应的本地日（用于查询日汇总表的下界）。</summary>
+    private static string LocalDayKey(DateTime utc) => utc.ToLocalTime().ToString("yyyy-MM-dd");
+
+    /// <summary>UTC 排他上界对应的本地日上界：正好在 0 点就用当天日期，否则取次日。</summary>
+    private static string LocalDayExclusive(DateTime utc)
+    {
+        var local = utc.ToLocalTime();
+        var date = local.TimeOfDay == TimeSpan.Zero ? local.Date : local.Date.AddDays(1);
+        return date.ToString("yyyy-MM-dd");
+    }
+
 
     /// <summary>
     /// 生成全部片段的 CSV 文本（UTF-8 带 BOM，Excel 双击即可正确识别中文）。

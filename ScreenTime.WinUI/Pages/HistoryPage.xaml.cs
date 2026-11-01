@@ -220,8 +220,11 @@ public partial class HistoryPage : Page
     private Snapshot BuildSnapshot(DateTime from, DateTime to, DateTime fromDay, int days)
     {
         var apps = _db.QueryAppUsage(from, to);
+        // 明细片段只用于「最活跃时段」的小时分布；总时长与每日柱状走日汇总，
+        // 否则超过保留期的日期会突然变成 0。
         var segments = _db.QuerySegments(from, to);
-        var totalSec = StatsService.UnionSeconds(segments.Select(s => (s.Start, s.End)).ToList());
+        var daily = _db.QueryDailySeconds(fromDay, days);
+        var totalSec = daily.Values.Sum();
 
         var categories = apps
             .GroupBy(a => a.Category)
@@ -236,23 +239,18 @@ public partial class HistoryPage : Page
         var topCategory = apps.OrderByDescending(a => a.TotalSeconds).FirstOrDefault()?.Category ?? "未分类";
 
         return new Snapshot(apps, totalSec, categories, topCategory, iconByApp, purposes,
-            BuildDayTotals(segments, fromDay, days), BuildHourSeconds(segments));
+            BuildDayTotals(daily, fromDay, days), BuildHourSeconds(segments));
     }
 
-    /// <summary>按本地日切分每段时长（跨午夜会拆到两天），再按天做区间并集。</summary>
+    /// <summary>每日总时长：明细期用区间并集，折叠期用日汇总，两者按本地日合并。</summary>
     private static List<(DateTime Day, double Seconds)> BuildDayTotals(
-        List<(DateTime Start, DateTime End, int AppId, string Kind)> segments, DateTime fromDay, int days)
+        Dictionary<string, double> daily, DateTime fromDay, int days)
     {
         var result = new List<(DateTime, double)>(days);
         for (var i = 0; i < days; i++)
         {
             var day = fromDay.AddDays(i);
-            var df = day.ToUniversalTime();
-            var dt = day.AddDays(1).ToUniversalTime();
-            var list = new List<(DateTime Start, DateTime End)>();
-            foreach (var s in segments)
-                if (s.Start < dt && s.End > df) list.Add((s.Start, s.End));
-            result.Add((day, StatsService.UnionSeconds(list)));
+            result.Add((day, daily.TryGetValue(day.ToString("yyyy-MM-dd"), out var sec) ? sec : 0));
         }
         return result;
     }

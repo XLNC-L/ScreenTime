@@ -67,6 +67,39 @@ public sealed class WatcherService : IDisposable
 
     public bool IsRunning { get; private set; }
 
+    /// <summary>最近一次成功采集的时间写库节流：30 秒一次，避免 5 秒心跳都写库。</summary>
+    private DateTime _lastForegroundMarkUtc = DateTime.MinValue;
+    private DateTime _lastAudioMarkUtc = DateTime.MinValue;
+    private DateTime _lastErrorMarkUtc = DateTime.MinValue;
+
+    /// <summary>记录「这条采集通道还活着」，供设置页的运行状态卡片判断是否漏记。</summary>
+    private void MarkCollectAlive(string settingKey, ref DateTime last, DateTime now)
+    {
+        if (now - last < TimeSpan.FromSeconds(30)) return;
+        last = now;
+        try { _db.SetSetting(settingKey, Database.ToIso(now)); } catch { }
+    }
+
+    /// <summary>
+    /// 采集异常落一笔账：限频（10 分钟一条）+ 累计次数。
+    /// 原来的 catch{} 能让 Agent 活下来，但用户完全不知道某段时间采集中断过。
+    /// </summary>
+    private void ReportCollectError(string module, Exception ex)
+    {
+        try
+        {
+            var now = DateTime.UtcNow;
+            if (now - _lastErrorMarkUtc < TimeSpan.FromMinutes(10)) return;
+            _lastErrorMarkUtc = now;
+
+            var n = long.TryParse(_db.GetSetting("collect_error_count", "0"), out var v) ? v : 0;
+            _db.SetSetting("collect_error_count", (n + 1).ToString());
+            _db.SetSetting("collect_last_error",
+                $"{DateTime.Now:yyyy-MM-dd HH:mm} [{module}] {ex.GetType().Name}: {ex.Message}");
+        }
+        catch { }
+    }
+
     public WatcherService(Database db)
     {
         _db = db;
@@ -85,7 +118,7 @@ public sealed class WatcherService : IDisposable
         // 上一轮还没跑完就跳过本轮，避免心跳叠加
         if (!Monitor.TryEnter(_gate, 500)) return;
         try { Heartbeat(); }
-        catch { /* 单次心跳异常不影响后续 */ }
+        catch (Exception ex) { ReportCollectError("heartbeat", ex); }
         finally { Monitor.Exit(_gate); }
     }
 
@@ -257,6 +290,7 @@ public sealed class WatcherService : IDisposable
         }
 
         var (appId, category, purpose) = EnsureApp(info);
+        MarkCollectAlive("collect_last_foreground_utc", ref _lastForegroundMarkUtc, now);
 
         // 浏览器标签页：读取当前活动网站，并据此细化用途
         var site = "";
@@ -336,10 +370,14 @@ public sealed class WatcherService : IDisposable
         {
             active = _audio.GetActiveProcessIds();
         }
-        catch
+        catch (Exception ex)
         {
+            ReportCollectError("audio", ex);
             return;
         }
+
+        if (active.Count > 0)
+            MarkCollectAlive("collect_last_audio_utc", ref _lastAudioMarkUtc, now);
 
         // 停止发声的：关闭片段
         foreach (var pid in _audioSegments.Keys.Where(k => !active.Contains(k)).ToList())

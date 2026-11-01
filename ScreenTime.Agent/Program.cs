@@ -81,6 +81,14 @@ internal static class Program
             }
             File.WriteAllText(stamp, DateTime.Now.ToString("O"));
 
+            // 诊断用：本次崩溃重启记一笔，设置页能看到「重启过几次」
+            try
+            {
+                var n = long.TryParse(_db.GetSetting("agent_restart_count", "0"), out var v) ? v : 0;
+                _db.SetSetting("agent_restart_count", (n + 1).ToString());
+            }
+            catch { }
+
             var exe = Environment.ProcessPath;
             if (string.IsNullOrEmpty(exe) || !File.Exists(exe)) return;
             Process.Start(new ProcessStartInfo(exe) { UseShellExecute = true });
@@ -90,6 +98,67 @@ internal static class Program
         {
             WriteLog("restart failed: " + ex.Message);
         }
+    }
+
+    /// <summary>
+    /// 每日维护：超过保留期的明细折叠成日汇总后删除，删除前先备份（保留最近 3 份），
+    /// 每月再 VACUUM 一次回收文件空间。放在 Agent 里跑，UI 关掉也照常执行。
+    /// </summary>
+    private static void RunDailyMaintenance()
+    {
+        try
+        {
+            if (_db.DetailRetentionDays() <= 0) return;   // 永久保留
+
+            var today = DateTime.Now.ToString("yyyy-MM-dd");
+            if (_db.GetSetting("detail_prune_day", "") == today) return;
+
+            var cutoff = _db.DetailCutoffDay();
+            if (cutoff is null) return;
+
+            var dir = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "ScreenTime");
+            var backupDir = Path.Combine(dir, "backups");
+            Directory.CreateDirectory(backupDir);
+            var backupPath = Path.Combine(backupDir, $"before-prune-{today}.db");
+            if (!File.Exists(backupPath))
+            {
+                _db.BackupTo(backupPath);
+                PruneOldBackups(backupDir, 3);
+            }
+
+            var report = _db.FoldDetailsBefore(cutoff);
+            if (report.Error != null)
+            {
+                // 不写标记，30 分钟后重试；明细此时还在，不会丢数据
+                WriteLog("prune failed: " + report.Error);
+                return;
+            }
+
+            _db.SetSetting("detail_prune_day", today);
+            if (report.DeletedSegments > 0)
+                WriteLog($"prune: folded {report.Days} days / {report.DeletedSegments} segments / {report.Seconds:0}s (cutoff {cutoff})");
+
+            var month = DateTime.Now.ToString("yyyy-MM");
+            if (_db.GetSetting("detail_vacuum_month", "") != month)
+            {
+                _db.Vacuum();
+                _db.SetSetting("detail_vacuum_month", month);
+                WriteLog("vacuum done");
+            }
+        }
+        catch (Exception ex) { WriteError(ex); }
+    }
+
+    private static void PruneOldBackups(string dir, int keep)
+    {
+        try
+        {
+            foreach (var file in Directory.GetFiles(dir, "before-prune-*.db")
+                         .OrderByDescending(f => f).Skip(keep))
+                File.Delete(file);
+        }
+        catch { }
     }
 
     private static void Run(string[] args)
@@ -110,6 +179,18 @@ internal static class Program
         // 设置热重载：UI 修改音频/用途/浏览器开关后写 settings_version，这里轮询并刷新
         var settingsTimer = new System.Threading.Timer(_ => CheckSettingsReload(),
             null, TimeSpan.FromSeconds(10), TimeSpan.FromSeconds(10));
+
+        // 运行状态心跳：设置页的「运行状态」卡片靠它判断采集器是否还在跑。
+        // 30 秒写一次，不要用 5 秒的采集节拍——那是每秒都在写库的放大。
+        _db.SetSetting("agent_started_at", Database.ToIso(DateTime.UtcNow));
+        var heartbeatTimer = new System.Threading.Timer(_ =>
+        {
+            try { _db.SetSetting("agent_heartbeat", Database.ToIso(DateTime.UtcNow)); } catch { }
+        }, null, TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(30));
+
+        // 明细保留：每天最多跑一次，超过保留期的明细折叠成日汇总后再删除
+        var pruneTimer = new System.Threading.Timer(_ => RunDailyMaintenance(),
+            null, TimeSpan.FromSeconds(60), TimeSpan.FromMinutes(30));
 
         // 浏览器历史回填：v1.2.0 起从 UI 进程搬到这里，UI 关掉也能继续补网页地址。
         // 内部自带 30 分钟节拍与「回填开关」判断，关闭时自动跳过。
@@ -143,6 +224,8 @@ internal static class Program
 
         RunMessageLoop();
         try { settingsTimer.Dispose(); } catch { }
+        try { heartbeatTimer.Dispose(); } catch { }
+        try { pruneTimer.Dispose(); } catch { }
         try { _historyImport.Dispose(); } catch { }
         try { _watcher.Dispose(); } catch { }
         try { _tray.Dispose(); } catch { }

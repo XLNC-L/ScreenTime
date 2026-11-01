@@ -3,6 +3,7 @@ using System.Diagnostics;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Controls.Primitives;
+using ScreenTime.Data;
 using ScreenTime.Services;
 using Windows.Storage.Pickers;
 
@@ -49,6 +50,10 @@ public partial class SettingsPage : Page
             foreach (ComboBoxItem item in RetentionBox.Items)
                 if ((string)item.Tag == retention) RetentionBox.SelectedItem = item;
 
+            var detailRetention = db.GetSetting("detail_retention_days", "60");
+            foreach (ComboBoxItem item in DetailRetentionBox.Items)
+                if ((string)item.Tag == detailRetention) DetailRetentionBox.SelectedItem = item;
+
             DbPathText.Text = "数据库位置：" + db.DbPath;
         }
         catch
@@ -59,6 +64,8 @@ public partial class SettingsPage : Page
         {
             _loading = false;
         }
+
+        await RefreshHealthAsync();
 
         // 自启状态要读任务文件/schtasks（可能几百毫秒），放后台
         try
@@ -209,6 +216,96 @@ public partial class SettingsPage : Page
         await RunDbAsync(() => App.Current.Database.SetSetting("title_retention", value));
     }
 
+    private async void DetailRetentionBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_loading || DetailRetentionBox.SelectedItem is not ComboBoxItem item) return;
+        var value = (string)item.Tag;
+        await RunDbAsync(() =>
+        {
+            App.Current.Database.SetSetting(Database.DetailRetentionKey, value);
+            // Agent 每 30 分钟会检查一次，改完立刻刷一次版本号让它尽快生效
+            App.SignalSettingsChanged();
+        });
+        await RefreshHealthAsync();
+    }
+
+    private async void RefreshHealthBtn_Click(object sender, RoutedEventArgs e) => await RefreshHealthAsync();
+
+    private void OpenLogsBtn_Click(object sender, RoutedEventArgs e)
+    {
+        var dir = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "ScreenTime");
+        if (!Directory.Exists(dir)) Directory.CreateDirectory(dir);
+        Process.Start(new ProcessStartInfo("explorer.exe", dir) { UseShellExecute = true });
+    }
+
+    /// <summary>读取运行状态：库查询放后台线程，避免与 Agent 的写锁抢 UI 线程。</summary>
+    private async System.Threading.Tasks.Task RefreshHealthAsync()
+    {
+        try
+        {
+            var health = await System.Threading.Tasks.Task.Run(() => App.Current.Database.GetHealth());
+            ApplyHealth(health);
+        }
+        catch (Exception ex)
+        {
+            HealthCollectText.Text = "读取失败：" + ex.Message;
+        }
+    }
+
+    private void ApplyHealth(Database.HealthSnapshot h)
+    {
+        var fg = ParseUtc(h.LastForegroundUtc);
+        var au = ParseUtc(h.LastAudioUtc);
+        HealthCollectText.Text = $"前台 {AgoText(fg)} · 音频 {AgoText(au)}";
+
+        var beat = ParseUtc(h.AgentHeartbeat);
+        if (beat is null)
+            HealthAgentText.Text = "未运行（还没收到心跳）";
+        else if ((DateTime.UtcNow - beat.Value).TotalSeconds > 90)
+            HealthAgentText.Text = $"未运行（心跳停在 {beat.Value.ToLocalTime():MM-dd HH:mm}）";
+        else
+        {
+            var started = ParseUtc(h.AgentStartedAt);
+            var uptime = started is null
+                ? ""
+                : $"运行 {StatsService.FormatDuration((DateTime.UtcNow - started.Value).TotalSeconds)} · ";
+            HealthAgentText.Text = $"{uptime}重启 {h.AgentRestartCount} 次";
+        }
+
+        HealthDbText.Text = h.CutoffDay is null
+            ? $"{FormatBytes(h.DbBytes)} · 明细 {h.SegmentCount:N0} 条 · 明细永久保留"
+            : $"{FormatBytes(h.DbBytes)} · 明细 {h.SegmentCount:N0} 条 · 已折叠 {h.FoldedDays} 天 · 保留 {h.RetentionDays} 天";
+
+        HealthErrorText.Text = h.CollectErrorCount == 0
+            ? "无"
+            : $"{h.CollectErrorCount} 次 · {h.LastCollectError}";
+    }
+
+    private static DateTime? ParseUtc(string raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw)) return null;
+        try { return Database.ParseIso(raw); } catch { return null; }
+    }
+
+    private static string AgoText(DateTime? utc)
+    {
+        if (utc is null) return "暂无记录";
+        var span = DateTime.UtcNow - utc.Value;
+        if (span.TotalSeconds < 60) return "刚刚";
+        if (span.TotalMinutes < 60) return $"{span.TotalMinutes:0} 分钟前";
+        if (span.TotalHours < 24) return $"{span.TotalHours:0} 小时前";
+        return utc.Value.ToLocalTime().ToString("MM-dd HH:mm");
+    }
+
+    private static string FormatBytes(long bytes)
+    {
+        if (bytes <= 0) return "0 KB";
+        return bytes < 1024 * 1024
+            ? $"{bytes / 1024.0:0} KB"
+            : $"{bytes / 1024.0 / 1024.0:0.0} MB";
+    }
+
     private async void ChangeLocationBtn_Click(object sender, RoutedEventArgs e)
     {
         var picker = new FolderPicker();
@@ -259,8 +356,9 @@ public partial class SettingsPage : Page
         var result = await dialog.ShowAsync();
         if (result != ContentDialogResult.Primary) return;
 
-        App.Current.Database.DeleteSegmentsBefore(DateTime.UtcNow.AddYears(100));
+        App.Current.Database.ClearAllUsage();
         ShowInfoBar("已清除全部时长记录。", InfoBarSeverity.Success);
+        await RefreshHealthAsync();
     }
 
     private async void ExportCsvBtn_Click(object sender, RoutedEventArgs e)
