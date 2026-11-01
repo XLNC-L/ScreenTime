@@ -61,6 +61,9 @@ dotnet publish ScreenTime.Agent\ScreenTime.Agent.csproj -c Release -r win-x64 ^
 ```bat
 ISCC.exe /DAppVersion=1.0.0 installer\ScreenTime.iss
 :: 产物：dist\ScreenTime-Setup-1.0.0.exe
+
+:: 打包自包含发布（自带 .NET 8 运行时）时，加 /DSelfContained=1 跳过运行时检测
+ISCC.exe /DAppVersion=1.0.0 /DSelfContained=1 installer\ScreenTime.iss
 ```
 
 打 tag 推上去会由 `.github/workflows/release.yml` 自动完成上面全部步骤并挂到 Release。

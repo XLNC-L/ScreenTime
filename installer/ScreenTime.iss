@@ -6,9 +6,16 @@
 ;   ISCC.exe /DAppVersion=1.0.0 installer\ScreenTime.iss
 ;
 ; 版本号从命令行注入（/DAppVersion=x.y.z），未注入时用下面的默认值。
+;
+; 自包含发布（--self-contained true，自带 .NET 8 运行时）时加 /DSelfContained=1，
+; 安装向导会跳过「检测 .NET 8 运行时」这一步。
 
 #ifndef AppVersion
   #define AppVersion "1.0.0"
+#endif
+
+#ifndef SelfContained
+  #define SelfContained "0"
 #endif
 
 #define AppName "ScreenTime"
@@ -60,7 +67,7 @@ Name: "chinese"; MessagesFile: "compiler:Default.isl"
 Name: "desktopicon"; Description: "创建桌面快捷方式"; GroupDescription: "附加任务："; Flags: unchecked
 
 [Files]
-; 发布目录整体打包（279 个文件 / 95 MB）
+; 发布目录整体打包（框架依赖约 279 文件 / 95 MB；自包含约 473 文件 / 210 MB）
 Source: "..\ScreenTime-WinUI\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubdirs ignoreversion
 
 [Icons]
@@ -118,6 +125,11 @@ var
   ErrorCode: Integer;
 begin
   Result := True;
+
+  // 自包含发布自带运行时（发布目录的 runtimeconfig.json 里是 includedFrameworks），
+  // 这时再要求目标机装 .NET 8 就是多余的。
+  if '{#SelfContained}' = '1' then Exit;
+
   if HasDotNet8() then Exit;
 
   // 静默安装时不弹窗（否则会卡住无人值守安装），直接失败

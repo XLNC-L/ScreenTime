@@ -25,7 +25,7 @@ build.cmd                                     :: 编译 UI + Agent 并 publish �
 powershell -File tools\publish.ps1 -Deploy     :: 自包含发布并镜像到 D:\ScreenTime-v1.2.0-win-x64
 dotnet build ScreenTime.sln -c Release        :: 只编译
 dotnet test ScreenTime.Tests\ScreenTime.Tests.csproj -c Release
-"%LOCALAPPDATA%\Programs\Inno Setup 6\ISCC.exe" /DAppVersion=x.y.z installer\ScreenTime.iss
+"%LOCALAPPDATA%\Programs\Inno Setup 6\ISCC.exe" /DAppVersion=x.y.z /DSelfContained=1 installer\ScreenTime.iss
 ```
 
 > 发布必须同时 publish **UI 和 Agent 两个进程到同一目录**，否则托盘/采集会缺文件。
