@@ -214,7 +214,11 @@ public partial class HistoryPage : Page
         Dictionary<int, (string ExePath, string ProcessName, string IconSource)> IconByApp,
         List<(string Purpose, double Seconds)> Purposes,
         List<(DateTime Day, double Seconds)> DayTotals,
-        double[] HourSeconds);
+        double[] HourSeconds,
+        double PrevTotalSeconds,
+        string PrevTopApp,
+        Database.LongestSession? Longest,
+        int SwitchTotal);
 
     /// <summary>在后台线程执行：查库 + 纯计算，不碰任何 UI 对象。</summary>
     private Snapshot BuildSnapshot(DateTime from, DateTime to, DateTime fromDay, int days)
@@ -238,8 +242,16 @@ public partial class HistoryPage : Page
         var purposes = _db.QueryPurposeUsage(from, to);
         var topCategory = apps.OrderByDescending(a => a.TotalSeconds).FirstOrDefault()?.Category ?? "未分类";
 
+        // 洞察：与紧邻的上一周期对比、最长连续使用、窗口切换频率
+        var prevApps = _db.QueryAppUsage(from.AddDays(-days), from);
+        var prevTotal = prevApps.Sum(a => a.TotalSeconds);
+        var prevTop = prevApps.OrderByDescending(a => a.TotalSeconds).FirstOrDefault()?.AppName ?? "";
+        var longest = _db.QueryLongestSession(from, to);
+        var switches = _db.QuerySwitchTotal(fromDay, fromDay.AddDays(days));
+
         return new Snapshot(apps, totalSec, categories, topCategory, iconByApp, purposes,
-            BuildDayTotals(daily, fromDay, days), BuildHourSeconds(segments));
+            BuildDayTotals(daily, fromDay, days), BuildHourSeconds(segments),
+            prevTotal, prevTop, longest, switches);
     }
 
     /// <summary>每日总时长：明细期用区间并集，折叠期用日汇总，两者按本地日合并。</summary>
@@ -307,6 +319,40 @@ public partial class HistoryPage : Page
 
         BindPurpose(snapshot.Purposes);
         BindReportExtras(snapshot.DayTotals, snapshot.HourSeconds, days, snapshot.TopCategory);
+        BindInsights(snapshot);
+    }
+
+    /// <summary>洞察区：与上一周期的对比、最长连续使用、窗口切换频率。数据已在后台查好。</summary>
+    private void BindInsights(Snapshot s)
+    {
+        var top = s.Apps.OrderByDescending(a => a.TotalSeconds).FirstOrDefault()?.AppName ?? "无";
+
+        if (s.PrevTotalSeconds <= 0)
+        {
+            CompareText.Text = $"{StatsService.FormatDuration(s.TotalSeconds)}；上一周期没有数据可对比。";
+        }
+        else
+        {
+            var delta = (s.TotalSeconds - s.PrevTotalSeconds) / s.PrevTotalSeconds * 100;
+            var word = delta >= 0 ? "多" : "少";
+            CompareText.Text =
+                $"{StatsService.FormatDuration(s.TotalSeconds)}，比上一周期{word} {Math.Abs(delta):0}% " +
+                $"（上一周期 {StatsService.FormatDuration(s.PrevTotalSeconds)}）。\n" +
+                $"使用最多：{top}（上一周期：{(s.PrevTopApp.Length > 0 ? s.PrevTopApp : "无")}）。";
+        }
+
+        LongestText.Text = s.Longest is null
+            ? "明细期内没有可计算的连续片段。"
+            : $"{s.Longest.AppName} · {StatsService.FormatDuration(s.Longest.Seconds)}" +
+              $"（{s.Longest.StartUtc.ToLocalTime():MM-dd HH:mm} 开始）";
+
+        var activeHours = s.TotalSeconds / 3600.0;
+        SwitchText.Text = s.SwitchTotal <= 0
+            ? "还没有切换记录（从 v1.3.2 开始统计）。"
+            : activeHours < 0.1
+                ? $"本区间共 {s.SwitchTotal} 次。"
+                : $"平均每小时 {s.SwitchTotal / activeHours:0} 次（共 {s.SwitchTotal} 次）。" +
+                  "频繁切换只是参考，不代表效率低。";
     }
 
     private void RetryBtn_Click(object sender, RoutedEventArgs e) => RequestQuery();

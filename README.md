@@ -139,6 +139,7 @@ ScreenTime.exe --db=%TEMP%\st-demo\demo.db               :: 用演示库启动�
 | `apps` | 应用清单：exe 路径、进程名、显示名、分类、默认用途、忽略/合并标记 |
 | `usage_segments` | 使用片段：应用、类型（前台/音频）、起止时间、窗口标题、网页、用途 |
 | `session_events` | 开机/锁屏/解锁/休眠/关机事件 |
+| `hourly_switches` | 按小时的窗口切换次数（历史页洞察用） |
 | `settings` | 键值设置（含采集心跳与保留策略） |
 | `daily_totals` / `daily_app_totals` | 超过保留期的明细折叠成的日汇总：每天总时长、按应用的前台/音频/合计秒数 |
 | `daily_purpose_totals` / `daily_site_totals` | 同上，按用途与网页域名汇总（折叠后不再保留标题与地址） |
@@ -189,7 +190,7 @@ ScreenTime.WinUI/           界面进程
 dotnet test ScreenTime.sln -c Release
 ```
 
-149 个用例，覆盖 `ScreenTime.Core` 的纯逻辑：
+151 个用例，覆盖 `ScreenTime.Core` 的纯逻辑：
 
 - **统计口径**（`StatsService`）：区间并集（重叠 / 嵌套 / 相邻 / 乱序 / 倒序 / 空）、
   时长格式化（0、秒级、分钟级、小时级、NaN、Infinity、超大值）

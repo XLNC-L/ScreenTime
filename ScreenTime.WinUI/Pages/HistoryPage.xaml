@@ -298,6 +298,59 @@
                 </StackPanel>
             </Border>
 
+            <Border Padding="16" Background="{ThemeResource CardBackgroundFillColorDefaultBrush}" BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1" CornerRadius="8">
+                <StackPanel Spacing="12">
+                    <TextBlock Style="{StaticResource SubtitleTextBlockStyle}" Text="洞察" />
+                    <Grid ColumnSpacing="16" RowSpacing="10">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                        </Grid.RowDefinitions>
+
+                        <TextBlock
+                            Grid.Row="0"
+                            Grid.Column="0"
+                            VerticalAlignment="Top"
+                            Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                            Text="与上一周期对比" />
+                        <TextBlock
+                            x:Name="CompareText"
+                            Grid.Row="0"
+                            Grid.Column="1"
+                            TextWrapping="Wrap" />
+
+                        <TextBlock
+                            Grid.Row="1"
+                            Grid.Column="0"
+                            VerticalAlignment="Top"
+                            Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                            Text="最长连续使用" />
+                        <TextBlock
+                            x:Name="LongestText"
+                            Grid.Row="1"
+                            Grid.Column="1"
+                            TextWrapping="Wrap" />
+
+                        <TextBlock
+                            Grid.Row="2"
+                            Grid.Column="0"
+                            VerticalAlignment="Top"
+                            Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                            Text="窗口切换" />
+                        <TextBlock
+                            x:Name="SwitchText"
+                            Grid.Row="2"
+                            Grid.Column="1"
+                            TextWrapping="Wrap" />
+                    </Grid>
+                </StackPanel>
+            </Border>
+
         </StackPanel>
     </ScrollViewer>
 </Page>

@@ -392,17 +392,43 @@ public class DatabaseTests : IDisposable
         Assert.Equal(30, _db.QueryAppUsage(Base, Base.AddSeconds(60)).Sum(a => a.TotalSeconds), 1);
     }
 
+    // ---------- 行为洞察 ----------
+
     [Fact]
-    public void ClearWebData_KeepsAppsAndDurations()
+    public void HourlySwitches_UpsertIsAbsolute()
     {
-        var chrome = _db.GetOrCreateApp(@"C:\B\chrome2.exe", "chrome", "Chrome2", "", "浏览与资讯");
-        _db.InsertSegment(chrome, "foreground", Base, Base.AddSeconds(30),
-            "标题", "2026-01-01", "", "example.com", "https://example.com/a");
-        _db.FoldDetailsBefore("2026-01-02");   // 让域名也进一遍汇总表
+        _db.SetHourlySwitches("2026-01-01", 10, 5);
+        _db.SetHourlySwitches("2026-01-01", 10, 7);   // 覆盖而不是累加
+        _db.SetHourlySwitches("2026-01-01", 11, 3);
 
-        _db.ClearWebData();
+        Assert.Equal(10, _db.QuerySwitchTotal(new DateTime(2026, 1, 1), new DateTime(2026, 1, 2)));
+        Assert.Equal(0, _db.QuerySwitchTotal(new DateTime(2026, 1, 2), new DateTime(2026, 1, 3)));
+    }
 
-        Assert.Empty(_db.QueryWebPages(Base, Base.AddSeconds(60)));
-        Assert.Equal(30, _db.QueryAppUsage(Base, Base.AddSeconds(60)).Sum(a => a.TotalSeconds), 1);
+    [Fact]
+    public void QueryLongestSession_MergesAdjacentSameApp()
+    {
+        var id = NewApp("long", "长用", @"C:\L\long.exe");
+        AddSeg(id, 0, 100);
+        AddSeg(id, 100, 200);   // 紧邻的两段应合并成一段 200 秒
+
+        var longest = _db.QueryLongestSession(Base.AddSeconds(-10), Base.AddSeconds(300));
+        Assert.NotNull(longest);
+        Assert.Equal("长用", longest!.AppName);
+        Assert.Equal(200, longest.Seconds, 1);
+    }
+
+    [Fact]
+    public void QueryLongestSession_PicksLongestAcrossApps()
+    {
+        var shortApp = NewApp("a1", "短用", @"C:\A\a1.exe");
+        var longApp = NewApp("b1", "长用2", @"C:\B\b1.exe");
+        AddSeg(shortApp, 0, 30);
+        AddSeg(longApp, 200, 400);
+
+        var longest = _db.QueryLongestSession(Base.AddSeconds(-10), Base.AddSeconds(500));
+        Assert.NotNull(longest);
+        Assert.Equal("长用2", longest!.AppName);
+        Assert.Equal(200, longest.Seconds, 1);
     }
 }

@@ -75,6 +75,37 @@ public sealed class WatcherService : IDisposable
     /// <summary>敏感域名排除名单：随设置热重载刷新，不跟着 5 秒心跳读库。</summary>
     private string[] _excludedDomains = WebPrivacy.ResolveList("");
 
+    /// <summary>窗口切换计数（键 "yyyy-MM-dd|hour"）：内存累计，每 5 分钟落一次库。</summary>
+    private readonly Dictionary<string, int> _switchCounts = new();
+    private DateTime _lastSwitchFlushUtc = DateTime.MinValue;
+
+    private void CountSwitch(DateTime nowUtc)
+    {
+        var local = nowUtc.ToLocalTime();
+        var key = $"{local:yyyy-MM-dd}|{local.Hour}";
+        _switchCounts[key] = _switchCounts.TryGetValue(key, out var n) ? n + 1 : 1;
+    }
+
+    /// <summary>把累计的切换次数按小时写库（绝对值覆盖，重复刷新不会翻倍）。</summary>
+    private void FlushSwitchCounts()
+    {
+        if (_switchCounts.Count == 0) return;
+        var today = DateTime.Now.ToString("yyyy-MM-dd");
+        try
+        {
+            foreach (var (key, count) in _switchCounts)
+            {
+                var parts = key.Split('|');
+                if (parts.Length != 2 || !int.TryParse(parts[1], out var hour)) continue;
+                _db.SetHourlySwitches(parts[0], hour, count);
+            }
+            // 只保留今天的键，跨天后的旧小时已经落库，不必再占内存
+            foreach (var key in _switchCounts.Keys.Where(k => !k.StartsWith(today)).ToList())
+                _switchCounts.Remove(key);
+        }
+        catch { }
+    }
+
     /// <summary>记录「这条采集通道还活着」，供设置页的运行状态卡片判断是否漏记。</summary>
     private void MarkCollectAlive(string settingKey, ref DateTime last, DateTime now)
     {
@@ -240,10 +271,18 @@ public sealed class WatcherService : IDisposable
                 _db.MergeShortSegments(MinSegmentSeconds,
                     now - CompactLookback, now - TimeSpan.FromMinutes(2));
             }
+
+            // 切换计数同样每 5 分钟落一次，避免每次窗口切换都写库
+            if (now - _lastSwitchFlushUtc > CompactInterval)
+            {
+                _lastSwitchFlushUtc = now;
+                FlushSwitchCounts();
+            }
         }
-        catch
+        catch (Exception ex)
         {
-            // 单次心跳异常不影响后续
+            // 单次心跳异常不影响后续，但要落一笔账（限频），否则用户永远不知道漏记过
+            ReportCollectError("heartbeat", ex);
         }
     }
 
@@ -316,6 +355,7 @@ public sealed class WatcherService : IDisposable
         }
         else if (_fgSegment.AppId != appId)
         {
+            CountSwitch(now);   // 换应用 = 一次窗口切换，按小时累计
             CloseSegment(_fgSegment, now);
             _fgSegment = OpenSegment(appId, "foreground", now, info.Title, purpose, info.ProcessName, site);
             MaybeAskPurpose(_fgSegment, category);
@@ -555,6 +595,8 @@ public sealed class WatcherService : IDisposable
         lock (_gate)
         {
             CloseAll();
+            // 退出前把还没落库的切换次数写下去，避免丢掉最后几分钟
+            FlushSwitchCounts();
             // 主动退出时把亮屏段收口。不收的话下次启动只能靠 RepairDisplaySpans
             // 去猜「上次活到什么时候」，退出时间点是已知的，没必要猜。
             if (_display.IsOn) _db.AddSessionEvent("display_off", "exit");

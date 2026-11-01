@@ -257,6 +257,13 @@ public sealed class Database
                 PRIMARY KEY (day, app_id, site)
             );
             CREATE INDEX IF NOT EXISTS idx_daily_site_day ON daily_site_totals(day);
+            -- 窗口切换次数（按小时聚合）：反映「在任务间来回跳」的频度，与屏幕时长是两回事
+            CREATE TABLE IF NOT EXISTS hourly_switches (
+                day TEXT NOT NULL,
+                hour INTEGER NOT NULL,
+                switches INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (day, hour)
+            );
             """;
         cmd.ExecuteNonQuery();
         // 旧库补列必须在任何引用这些列的 SQL 之前完成：
@@ -2299,6 +2306,92 @@ public sealed class Database
             GetSetting("collect_last_audio_utc", "") ?? "",
             DetailRetentionDays(),
             DetailCutoffDay());
+    }
+
+    // ---------------- 行为洞察（v1.3.2） ----------------
+
+    /// <summary>写入某小时的切换次数（绝对值）：采集侧每 5 分钟刷一次累计值。</summary>
+    public void SetHourlySwitches(string day, int hour, int count)
+    {
+        using var c = Open();
+        using var cmd = c.CreateCommand();
+        cmd.CommandText = """
+            INSERT INTO hourly_switches(day, hour, switches) VALUES($d,$h,$n)
+            ON CONFLICT(day, hour) DO UPDATE SET switches=$n;
+            """;
+        cmd.Parameters.AddWithValue("$d", day);
+        cmd.Parameters.AddWithValue("$h", hour);
+        cmd.Parameters.AddWithValue("$n", count);
+        cmd.ExecuteNonQuery();
+    }
+
+    /// <summary>区间内的窗口切换总数（按本地日，上界不含）。</summary>
+    public int QuerySwitchTotal(DateTime fromDay, DateTime toDayExclusive)
+    {
+        using var c = Open();
+        using var cmd = c.CreateCommand();
+        cmd.CommandText = "SELECT COALESCE(SUM(switches),0) FROM hourly_switches WHERE day >= $f AND day < $t";
+        cmd.Parameters.AddWithValue("$f", fromDay.ToString("yyyy-MM-dd"));
+        cmd.Parameters.AddWithValue("$t", toDayExclusive.ToString("yyyy-MM-dd"));
+        return Convert.ToInt32(cmd.ExecuteScalar());
+    }
+
+    public sealed record LongestSession(string AppName, DateTime StartUtc, double Seconds);
+
+    /// <summary>
+    /// 区间内「同一应用连续使用」的最长一段。相邻片段间隔 ≤ 2 分钟算连续
+    /// （碎片治理之后正常片段本来就相连，这里只是容错）。
+    /// 只覆盖明细期；已折叠的旧数据没有片段级信息，不参与计算。
+    /// </summary>
+    public LongestSession? QueryLongestSession(DateTime fromUtc, DateTime toUtc)
+    {
+        var best = default(LongestSession);
+        var currentApp = "";
+        var currentStart = DateTime.MinValue;
+        var currentEnd = DateTime.MinValue;
+
+        void Settle()
+        {
+            if (currentApp.Length == 0) return;
+            var seconds = (currentEnd - currentStart).TotalSeconds;
+            if (seconds > 0 && (best is null || seconds > best.Seconds))
+                best = new LongestSession(currentApp, currentStart, seconds);
+        }
+
+        using var c = Open();
+        using var cmd = c.CreateCommand();
+        cmd.CommandText = """
+            SELECT COALESCE(ca.app_name, a.app_name), MAX(s.start_ts, $f), MIN(s.end_ts, $t)
+            FROM usage_segments s
+            JOIN apps a ON a.id = s.app_id
+            LEFT JOIN apps ca ON ca.id = a.merged_into
+            WHERE s.kind = 'foreground' AND s.end_ts > $f AND s.start_ts < $t
+              AND a.ignored = 0 AND (a.merged_into = 0 OR ca.ignored = 0)
+            ORDER BY s.start_ts
+            """;
+        cmd.Parameters.AddWithValue("$f", ToIso(fromUtc));
+        cmd.Parameters.AddWithValue("$t", ToIso(toUtc));
+        using var r = cmd.ExecuteReader();
+        while (r.Read())
+        {
+            var app = r.GetString(0);
+            var start = ParseIso(r.GetString(1));
+            var end = ParseIso(r.GetString(2));
+            if (end <= start) continue;
+
+            if (app == currentApp && (start - currentEnd).TotalMinutes <= 2)
+            {
+                currentEnd = end;
+                continue;
+            }
+
+            Settle();
+            currentApp = app;
+            currentStart = start;
+            currentEnd = end;
+        }
+        Settle();
+        return best;
     }
 
     /// <summary>UTC 时间对应的本地日（用于查询日汇总表的下界）。</summary>
