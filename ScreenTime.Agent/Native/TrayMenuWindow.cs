@@ -36,11 +36,8 @@ internal sealed class TrayMenuWindow : IDisposable
     private const uint WM_PAINT = 0x000F;
     private const uint WM_KEYDOWN = 0x0100;
     private const uint WM_MOUSEMOVE = 0x0200;
-    private const uint WM_LBUTTONDOWN = 0x0201;
     private const uint WM_LBUTTONUP = 0x0202;
-    private const uint WM_RBUTTONDOWN = 0x0204;
     private const uint WM_RBUTTONUP = 0x0205;
-    private const uint WM_MBUTTONDOWN = 0x0207;
     private const uint WM_MOUSELEAVE = 0x02A3;
     private const uint WM_ERASEBKGND = 0x0014;
 
@@ -50,7 +47,10 @@ internal sealed class TrayMenuWindow : IDisposable
     /// </summary>
     private const uint WM_APP_CLOSE = 0x8000 + 1;
 
-    private const int WH_MOUSE_LL = 14;
+    /// <summary>别的窗口拿到前台时系统广播的事件；只在真正切换前台时才触发，不碰输入事件流。</summary>
+    private const uint EVENT_SYSTEM_FOREGROUND = 0x0003;
+    private const uint WINEVENT_OUTOFCONTEXT = 0x0000;
+    private const int OBJID_WINDOW = 0;
 
     private const int ItemHeight = 34;
     private const int SeparatorHeight = 9;
@@ -68,9 +68,15 @@ internal sealed class TrayMenuWindow : IDisposable
     private static readonly Dictionary<IntPtr, TrayMenuWindow> OpenWindows = new();
     private static TrayMenuSession? _session;
 
-    /// <summary>低级鼠标钩子：菜单没拿到前台激活，收不到 WM_ACTIVATE，只能靠它感知「点了菜单外面」。</summary>
-    private static IntPtr _mouseHook;
-    private static HookProc? _mouseHookProc;
+    /// <summary>
+    /// 前台切换通知：菜单没拿到前台激活，收不到 WM_ACTIVATE，靠它感知「用户去别的窗口了」。
+    ///
+    /// 刻意不用 WH_MOUSE_LL 低级钩子（v1.4.2 的教训）：LL 钩子拦截全系统每一次鼠标事件，
+    /// 回调慢一点整个桌面鼠标都会「被拖住」；换成 WinEvent 只在真正发生前台切换时收到一次通知，
+    /// 对输入延迟零影响。指针移出菜单的关闭仍由 WM_MOUSELEAVE 定时器负责。
+    /// </summary>
+    private static IntPtr _winEventHook;
+    private static WinEventProc? _winEventProc;
 
     private static readonly IntPtr BgColor = Rgb(0x2B, 0x2B, 0x2B);
     private static readonly IntPtr HoverColor = Rgb(0x3A, 0x3A, 0x3A);
@@ -126,7 +132,9 @@ internal sealed class TrayMenuWindow : IDisposable
         }
     }
 
-    private bool ShowAt(int screenX, int screenY, bool above, Action<string>? log)
+    /// <param name="centerX">true：screenX 是锚点中心（托盘图标，菜单居中弹出）；false：screenX 是左边（子菜单）。
+    /// 这里曾有个存量 bug：OpenSub 把「左边」传进来，ShowAt 却按「中心」再做一次居中，子菜单整体左偏 88px 压住父菜单。</param>
+    private bool ShowAt(int screenX, int screenY, bool above, bool centerX, Action<string>? log)
     {
         _ownerThreadId = GetCurrentThreadId();
         var hInstance = GetModuleHandleW(null);
@@ -142,7 +150,7 @@ internal sealed class TrayMenuWindow : IDisposable
         RegisterClassExW(ref wc);
 
         var y = above ? screenY - _height : screenY;
-        var x = screenX - _width / 2;
+        var x = centerX ? screenX - _width / 2 : screenX;
 
         var work = SystemParameters.WorkArea;
         if (x + _width > work.Right) x = work.Right - _width;
@@ -336,7 +344,7 @@ internal sealed class TrayMenuWindow : IDisposable
             // 定时器/钩子可能在其他线程，统一由这里在消息线程落地销毁
             case WM_APP_CLOSE:
                 self.DestroyNow();
-                if (OpenWindows.Count == 0) UninstallMouseHook();
+                if (OpenWindows.Count == 0) UninstallWinEventHook();
                 return IntPtr.Zero;
 
             case WM_ACTIVATE:
@@ -367,41 +375,37 @@ internal sealed class TrayMenuWindow : IDisposable
     }
 
     /// <summary>装钩子必须在创建菜单窗口的消息线程上；回调也由该线程驱动，因此可以安全直接操作窗口。</summary>
-    private static void InstallMouseHook(Action<string>? log)
+    private static void InstallWinEventHook(Action<string>? log)
     {
-        if (_mouseHook != IntPtr.Zero) return;
-        _mouseHookProc ??= MouseHookCallback;
-        _mouseHook = SetWindowsHookExW(WH_MOUSE_LL, _mouseHookProc, GetModuleHandleW(null), 0);
-        if (_mouseHook == IntPtr.Zero) log?.Invoke($"menu: 鼠标钩子安装失败 err={Marshal.GetLastWin32Error()}");
+        if (_winEventHook != IntPtr.Zero) return;
+        _winEventProc ??= WinEventCallback;
+        _winEventHook = SetWinEventHook(EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND,
+            IntPtr.Zero, _winEventProc, 0, 0, WINEVENT_OUTOFCONTEXT);
+        if (_winEventHook == IntPtr.Zero)
+            log?.Invoke($"menu: WinEvent 钩子安装失败 err={Marshal.GetLastWin32Error()}");
     }
 
-    /// <summary>只在没有菜单窗口时摘钩，且不要从钩子回调里直接调（由 WM_APP_CLOSE 收尾时调用）。</summary>
-    private static void UninstallMouseHook()
+    /// <summary>只在没有菜单窗口时摘钩，且不要从回调里直接调（由 WM_APP_CLOSE 收尾时调用）。</summary>
+    private static void UninstallWinEventHook()
     {
-        if (_mouseHook == IntPtr.Zero) return;
-        UnhookWindowsHookEx(_mouseHook);
-        _mouseHook = IntPtr.Zero;
-        _mouseHookProc = null;
+        if (_winEventHook == IntPtr.Zero) return;
+        UnhookWinEvent(_winEventHook);
+        _winEventHook = IntPtr.Zero;
+        _winEventProc = null;
     }
 
-    private static IntPtr MouseHookCallback(int nCode, IntPtr wParam, IntPtr lParam)
+    private static void WinEventCallback(IntPtr hHook, uint evt, IntPtr hwnd, int idObject, int idChild,
+        uint dwEventThread, uint dwmsEventTime)
     {
         try
         {
             var session = _session;
-            if (nCode >= 0 && session is not null)
-            {
-                var msg = (uint)wParam.ToInt64();
-                if (msg is WM_LBUTTONDOWN or WM_RBUTTONDOWN or WM_MBUTTONDOWN)
-                {
-                    var pt = Marshal.PtrToStructure<MSLLHOOKSTRUCT>(lParam).pt;
-                    // 回调跑在装钩子的线程（托盘消息线程）上；只投递关闭，不吞这次点击，用户还能继续操作
-                    if (!session.IsPointInsideAny(pt)) session.CloseAll("点了菜单外");
-                }
-            }
+            if (session is null || idObject != OBJID_WINDOW) return;
+            // 自己的菜单窗口拿到前台（SetForegroundWindow 成功时）不算「去别处」
+            if (hwnd != IntPtr.Zero && OpenWindows.ContainsKey(hwnd)) return;
+            session.CloseAll("前台切换");
         }
         catch { }
-        return CallNextHookEx(_mouseHook, nCode, wParam, lParam);
     }
 
     private void DestroyNow()
@@ -438,13 +442,13 @@ internal sealed class TrayMenuWindow : IDisposable
         public bool OpenRoot(IReadOnlyList<Entry> entries, int x, int y)
         {
             var window = new TrayMenuWindow(entries.ToList());
-            if (!window.ShowAt(x, y, above: true, _log))
+            if (!window.ShowAt(x, y, above: true, centerX: true, _log))
             {
                 window.Dispose();
                 return false;
             }
             _windows.Add(window);
-            InstallMouseHook(_log);
+            InstallWinEventHook(_log);
             _log?.Invoke($"menu: 自绘菜单弹出 ({window._width}x{window._height})");
             return true;
         }
@@ -465,7 +469,7 @@ internal sealed class TrayMenuWindow : IDisposable
             var work = SystemParameters.WorkArea;
             if (x + sub._width > work.Right) x = parentRect.Left - sub._width + 4;
 
-            if (!sub.ShowAt(x, y, above: false, _log))
+            if (!sub.ShowAt(x, y, above: false, centerX: false, _log))
             {
                 sub.Dispose();
                 return;
@@ -525,7 +529,7 @@ internal sealed class TrayMenuWindow : IDisposable
             return GetCursorPos(out var pt) && IsPointInsideAny(pt);
         }
 
-        /// <summary>点是否落在任意一层菜单里（钩子线程调用，只读句柄，安全）。</summary>
+        /// <summary>点是否落在任意一层菜单里（由离开定时器在线程池回调里调用，只读句柄，安全）。</summary>
         public bool IsPointInsideAny(POINT pt)
         {
             foreach (var w in _windows)
@@ -565,7 +569,7 @@ internal sealed class TrayMenuWindow : IDisposable
             }
 
             // 是否摘钩看真实窗口数：跨线程的关闭是投递的，此刻可能还没销毁完
-            if (OpenWindows.Count == 0) UninstallMouseHook();
+            if (OpenWindows.Count == 0) UninstallWinEventHook();
         }
 
         private void CloseFrom(int index)
@@ -583,7 +587,8 @@ internal sealed class TrayMenuWindow : IDisposable
 
     private delegate IntPtr WndProcDelegate(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam);
 
-    private delegate IntPtr HookProc(int nCode, IntPtr wParam, IntPtr lParam);
+    private delegate void WinEventProc(IntPtr hWinEventHook, uint eventType, IntPtr hwnd, int idObject,
+        int idChild, uint dwEventThread, uint dwmsEventTime);
 
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
     private struct WNDCLASSEX
@@ -639,16 +644,6 @@ internal sealed class TrayMenuWindow : IDisposable
         public uint dwFlags;
         public IntPtr hwndTrack;
         public uint dwHoverTime;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct MSLLHOOKSTRUCT
-    {
-        public POINT pt;
-        public uint mouseData;
-        public uint flags;
-        public uint time;
-        public IntPtr dwExtraInfo;
     }
 
     private static class SystemParameters
@@ -761,11 +756,9 @@ internal sealed class TrayMenuWindow : IDisposable
     private static extern bool PostMessageW(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam);
 
     [DllImport("user32.dll", SetLastError = true)]
-    private static extern IntPtr SetWindowsHookExW(int idHook, HookProc lpfn, IntPtr hMod, uint dwThreadId);
-
-    [DllImport("user32.dll", SetLastError = true)]
-    private static extern bool UnhookWindowsHookEx(IntPtr hhk);
+    private static extern IntPtr SetWinEventHook(uint eventMin, uint eventMax, IntPtr hmodWinEventProc,
+        WinEventProc lpfnWinEventProc, uint idProcess, uint idThread, uint dwFlags);
 
     [DllImport("user32.dll")]
-    private static extern IntPtr CallNextHookEx(IntPtr hhk, int nCode, IntPtr wParam, IntPtr lParam);
+    private static extern bool UnhookWinEvent(IntPtr hWinEventHook);
 }

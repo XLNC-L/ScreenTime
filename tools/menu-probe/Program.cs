@@ -6,11 +6,25 @@ using ScreenTime.Agent.Native;
 //   MenuProbe.exe          进程内全生命周期用例
 //   MenuProbe.exe live     对运行中的 Agent 做端到端验证
 //   MenuProbe.exe count    统计系统内残留的菜单窗口
+//
+// 菜单的「点外面关闭」从 WH_MOUSE_LL 低级钩子（拖慢全系统鼠标，已废弃）
+// 改为 EVENT_SYSTEM_FOREGROUND WinEvent：只有别的窗口真正拿到前台才关闭。
+// 因此用例里的「点菜单外」必须制造一次真实的前台切换——
+//   * 真点击一个非前台的落点窗口（输入驱动的激活不受前台锁限制）
+//   * 或在两个落点窗口之间 SetForegroundWindow 轮换
+// 连续点同一个已在前台的窗口不产生事件，菜单按设计就不该关。
+//
+// 环境坑（都踩过）：
+//   * 真实指针是全局状态：窗口显示在静止指针下方时系统会补发 WM_MOUSEMOVE，
+//     悬停逻辑会意外展开子菜单——ShowMenu 前必须把指针停到中性点。
+//   * 宿主可能有 topmost/UIAccess 窗口盖住固定坐标——点击点必须用
+//     WindowFromPoint 自适应确认落在自己的落点窗口上。
 internal static class Program
 {
     private const string MenuClass = "ScreenTimeAgentTrayMenu_v2";
     private const uint WS_POPUP = 0x80000000;
     private const uint WS_VISIBLE = 0x10000000;
+    private const uint WS_EX_TOPMOST = 0x00000008;
     private const uint MOUSEEVENTF_LEFTDOWN = 0x0002;
     private const uint MOUSEEVENTF_LEFTUP = 0x0004;
     private const uint PM_REMOVE = 0x0001;
@@ -32,15 +46,50 @@ internal static class Program
 
     private static int _failures;
     private static int _picked;
-    private static IntPtr _dummy;
+    private static IntPtr _dummy;      // (0,0)-(160,120)
+    private static IntPtr _dummy2;     // (400,300)-(560,420)
+    private static bool _flip = true;
 
     private static int Main(string[] args)
     {
         Console.OutputEncoding = Encoding.UTF8;
 
         if (args.Length > 0 && args[0] == "count") return ModeCount();
+        if (args.Length > 0 && args[0] == "diag") return ModeDiag();
         if (args.Length > 0 && args[0] == "live") return ModeLive();
         return ModeSuite();
+    }
+
+    // ---------------- diag（看谁盖住了落点窗口） ----------------
+
+    private static int ModeDiag()
+    {
+        MakeDummy();
+        Thread.Sleep(200);
+        foreach (var (name, h) in new[] { ("dummy1", _dummy), ("dummy2", _dummy2) })
+        {
+            EnsureTop(h);
+            GetWindowRect(h, out var r);
+            Console.WriteLine($"{name}=0x{h.ToInt64():X} rect=({r.Left},{r.Top},{r.Right},{r.Bottom})");
+            for (var dy = 15; dy < 120; dy += 45)
+            {
+                for (var dx = 15; dx < 160; dx += 45)
+                {
+                    var hit = WindowFromPoint(r.Left + dx, r.Top + dy);
+                    var cls = "";
+                    if (hit != IntPtr.Zero)
+                    {
+                        var sb = new StringBuilder(256);
+                        GetClassNameW(hit, sb, sb.Capacity);
+                        cls = sb.ToString();
+                    }
+                    GetWindowThreadProcessId(hit, out var pid);
+                    Console.WriteLine($"  ({r.Left + dx},{r.Top + dy}) -> 0x{hit.ToInt64():X} {cls} pid={pid}{(hit == h ? " [自己]" : "")}");
+                }
+            }
+        }
+        DropDummy();
+        return 0;
     }
 
     // ---------------- count ----------------
@@ -72,8 +121,10 @@ internal static class Program
         Console.WriteLine($"托盘窗口: 0x{tray.ToInt64():X}");
         if (tray == IntPtr.Zero) { Check(false, "找不到运行中的 Agent"); return 1; }
 
-        SetCursorPos(1200, 700);
-        Thread.Sleep(200);
+        // 先把前台落到落点窗口 A 上（真实点击优先；被宿主窗口盖住时退化为 SetForegroundWindow）
+        ActivateDummy(prefersFirst: true);
+        Thread.Sleep(300);
+
         RightClickTray(tray);
         Thread.Sleep(700);
         var a = CountAll();
@@ -84,17 +135,22 @@ internal static class Program
         var b = CountAll();
         Check(b == 1, $"再右键一次仍应为 1（不套娃），实际 {b}");
 
-        ClickAt(80, 60);
+        // 切到落点窗口 B（前台切换）→ Agent 的 WinEvent 关菜单
+        ActivateDummy(prefersFirst: false);
         Thread.Sleep(700);
         var c = CountAll();
-        Check(c == 0, $"点菜单外后应为 0，实际 {c}");
+        Check(c == 0, $"切到别处后应为 0，实际 {c}");
 
-        Console.WriteLine("\n== 等回调队列排空后点外面，必须清零");
-        Thread.Sleep(1500);
-        ClickAt(80, 60);
+        Console.WriteLine("\n== 再来一轮：菜单重开，切回第一个落点窗口，必须清零");
+        RightClickTray(tray);
+        Thread.Sleep(700);
+        var e = CountAll();
+        Check(e == 1, $"重开后菜单数应为 1，实际 {e}");
+
+        ActivateDummy(prefersFirst: true);
         Thread.Sleep(800);
         var d = CountAll();
-        Check(d == 0, $"排空后点外面应为 0，实际 {d}");
+        Check(d == 0, $"切到别处后应为 0，实际 {d}");
 
         DropDummy();
         return Report("实战");
@@ -121,9 +177,15 @@ internal static class Program
         var n2 = Count();
         Check(n2 == 1, $"窗口数应为 1，实际 {n2}");
 
-        Section("3. 点菜单外立即关闭");
-        ClickAt(80, 60);
-        Pump(350);
+        Section("3. 前台切到别的窗口立即关闭（真实点击优先，被盖住则退化 SetForegroundWindow）");
+        ShowMenu();
+        Pump(150);
+        // 宿主聊天窗口常是全屏 Chromium 渲染件，把落点窗口全盖住，真实点击落不进去——
+        // 两条路触发的是同一个系统事件（EVENT_SYSTEM_FOREGROUND），机制验证等价。
+        var clicked = ClickOwnDummy();
+        Console.WriteLine(clicked ? "   · 路径：真实点击" : "   · 路径：SetForegroundWindow（落点窗口被宿主盖住）");
+        if (!clicked) ActivateDummy(prefersFirst: true);
+        Pump(400);
         var n3 = Count();
         Check(n3 == 0, $"窗口数应为 0，实际 {n3}");
 
@@ -137,14 +199,14 @@ internal static class Program
         var n4 = Count();
         Check(n4 == 0, $"窗口数应为 0，实际 {n4}");
 
-        Section("5. 悬停展开子菜单，点外面父子一起关");
+        Section("5. 悬停展开子菜单，激活其他窗口父子一起关");
         ShowMenu();
         Pump(150);
         HoverPauseRow();
         Pump(350);
         var n5 = Count();
         Check(n5 == 2, $"父 + 子应为 2，实际 {n5}");
-        ClickAt(80, 60);
+        ActivateOther();
         Pump(350);
         var n5b = Count();
         Check(n5b == 0, $"窗口数应为 0，实际 {n5b}");
@@ -159,12 +221,12 @@ internal static class Program
         var n6 = Count();
         Check(n6 == 0, $"窗口数应为 0，实际 {n6}");
 
-        Section("7. 反复 20 次开合无残留");
+        Section("7. 反复 20 次开合无残留（每轮用前台切换关闭）");
         for (var i = 0; i < 20; i++)
         {
             ShowMenu();
             Pump(40);
-            ClickAt(80, 60);
+            ActivateOther();
             Pump(40);
         }
         Pump(500);
@@ -184,18 +246,71 @@ internal static class Program
         return _failures == 0 ? 0 : 1;
     }
 
-    private static void MakeDummy() =>
-        _dummy = CreateWindowExW(0, "STATIC", "probe", WS_POPUP | WS_VISIBLE,
+    private static void MakeDummy()
+    {
+        // 落点窗口必须 TOPMOST：屏幕中央常被已前台的宿主窗口盖住，
+        // 点击落在它身上不产生前台切换（菜单按设计不关），还会误点用户的界面。
+        _dummy = CreateWindowExW(WS_EX_TOPMOST, "STATIC", "probe", WS_POPUP | WS_VISIBLE,
             0, 0, 160, 120, IntPtr.Zero, IntPtr.Zero, GetModuleHandleW(null), IntPtr.Zero);
+        _dummy2 = CreateWindowExW(WS_EX_TOPMOST, "STATIC", "probe2", WS_POPUP | WS_VISIBLE,
+            400, 300, 160, 120, IntPtr.Zero, IntPtr.Zero, GetModuleHandleW(null), IntPtr.Zero);
+    }
 
     private static void DropDummy()
     {
         if (_dummy != IntPtr.Zero) DestroyWindow(_dummy);
+        if (_dummy2 != IntPtr.Zero) DestroyWindow(_dummy2);
         _dummy = IntPtr.Zero;
+        _dummy2 = IntPtr.Zero;
     }
+
+    /// <summary>把落点窗口压回 topmost 带最顶端：宿主窗口可能后来居上。</summary>
+    private static void EnsureTop(IntPtr h) =>
+        SetWindowPos(h, (IntPtr)(-1) /*HWND_TOPMOST*/, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0010 /*NOSIZE|NOMOVE|NOACTIVATE*/);
+
+    /// <summary>
+    /// 在落点窗口上找一个真正可见、可点击的点（WindowFromPoint 命中的必须恰好是落点窗口本身），
+    /// 真实点击它。返回 false 表示这个窗口全被盖住。
+    /// </summary>
+    private static bool ClickPointOn(IntPtr target)
+    {
+        EnsureTop(target);
+        GetWindowRect(target, out var r);
+        for (var dy = 15; dy < 120; dy += 30)
+        for (var dx = 15; dx < 160; dx += 30)
+        {
+            var x = r.Left + dx;
+            var y = r.Top + dy;
+            if (WindowFromPoint(x, y) != target) continue;
+            ClickAt(x, y);
+            return true;
+        }
+        return false;
+    }
+
+    private static bool ClickOwnDummy() => ClickPointOn(_dummy) || ClickPointOn(_dummy2);
+
+    /// <summary>把前台切到指定落点窗口（优先 prefersFirst 对应那个），制造一次前台切换事件。</summary>
+    private static void ActivateDummy(bool prefersFirst)
+    {
+        var first = prefersFirst ? _dummy : _dummy2;
+        var second = prefersFirst ? _dummy2 : _dummy;
+        if (SetForegroundWindow(first)) { Pump(20); return; }
+        SetForegroundWindow(second);
+        Pump(20);
+    }
+
+    /// <summary>在两个落点窗口之间轮换前台：每次调用都制造一次真实的前台切换，
+    /// 这正是新关闭机制（EVENT_SYSTEM_FOREGROUND）的触发条件。</summary>
+    private static void ActivateOther() => ActivateDummy(prefersFirst: _flip = !_flip);
 
     private static void ShowMenu()
     {
+        // 真实指针是全局状态，上一轮用例可能把它留在菜单区域内——
+        // 窗口显示在静止指针下方时系统会补发 WM_MOUSEMOVE，悬停逻辑会意外展开子菜单。
+        // 先把指针停到远离菜单的中性点，保证用例确定性。
+        SetCursorPos(100, 250);
+        Pump(30);
         var ok = TrayMenuWindow.Show(600, 500, Entries,
             id => { _picked++; Console.WriteLine($"   → pick={id}"); },
             s => Console.WriteLine("   · " + s));
@@ -338,6 +453,16 @@ internal static class Program
 
     [DllImport("user32.dll")]
     private static extern bool SetCursorPos(int X, int Y);
+
+    [DllImport("user32.dll")]
+    private static extern bool SetForegroundWindow(IntPtr hWnd);
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr WindowFromPoint(int x, int y);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter,
+        int x, int y, int cx, int cy, uint uFlags);
 
     [DllImport("user32.dll", SetLastError = true)]
     private static extern bool PostMessageW(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam);

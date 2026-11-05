@@ -345,20 +345,20 @@ internal static class Program
     /// 消息泵：所有消息统一派发，托盘回调由 WndProc 处理。
     /// 不在泵里拦截托盘消息——shell 用 SendMessage 投递时消息不入队，
     /// 拦截式写法会完全收不到点击。
+    ///
+    /// 必须是阻塞式 GetMessage，不能用 PeekMessage + Sleep 轮询：
+    /// WinEvent 回调、跨线程 PostMessage 的落地速度全由这个泵决定，
+    /// 轮询会让每次派发平均多吃半个 Sleep 周期的延迟（v1.4.2 的教训：
+    /// 50ms 轮询 + 低级鼠标钩子 = 全系统鼠标「被拖住」）。
     /// </summary>
     private static void RunMessageLoop()
     {
-        const uint PM_REMOVE = 0x0001;
-        const uint WM_QUIT = 0x0012;
         while (!_exit)
         {
-            while (PeekMessageW(out var msg, IntPtr.Zero, 0, 0, PM_REMOVE))
-            {
-                if (msg.message == WM_QUIT) { _exit = true; break; }
-                TranslateMessage(ref msg);
-                DispatchMessageW(ref msg);
-            }
-            Thread.Sleep(50);
+            var r = GetMessageW(out var msg, IntPtr.Zero, 0, 0);
+            if (r <= 0) { _exit = true; break; }   // 0 = WM_QUIT，-1 = 错误，都该退出
+            TranslateMessage(ref msg);
+            DispatchMessageW(ref msg);
         }
     }
 
@@ -469,6 +469,9 @@ internal static class Program
     {
         try { _db.AddSessionEvent("shutdown"); } catch { }
         _exit = true;
+        // 消息泵现在是阻塞式 GetMessage，置标志叫不醒它，必须投 WM_QUIT。
+        // 这里跑在消息线程上（托盘菜单回调），投给当前线程即可。
+        PostThreadMessageW(GetCurrentThreadId(), 0x0012 /*WM_QUIT*/, IntPtr.Zero, IntPtr.Zero);
     }
 
     /// <summary>
@@ -703,8 +706,14 @@ internal static class Program
     }
 
     [DllImport("user32.dll")]
-    private static extern bool PeekMessageW(out Msg lpMsg, IntPtr hWnd, uint wMsgFilterMin,
-        uint wMsgFilterMax, uint wRemoveMsg);
+    private static extern int GetMessageW(out Msg lpMsg, IntPtr hWnd, uint wMsgFilterMin,
+        uint wMsgFilterMax);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern bool PostThreadMessageW(uint dwThreadId, uint msg, IntPtr wParam, IntPtr lParam);
+
+    [DllImport("kernel32.dll")]
+    private static extern uint GetCurrentThreadId();
 
     [DllImport("user32.dll")]
     private static extern bool TranslateMessage(ref Msg lpMsg);

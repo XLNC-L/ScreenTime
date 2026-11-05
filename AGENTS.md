@@ -64,9 +64,17 @@ dotnet run --project tools\menu-probe         :: 托盘菜单回归（弹出/关
     `PostMessage(WM_APP_CLOSE)` 回消息线程（见 `TrayMenuWindow.RequestClose`），
     直接跨线程 `DestroyWindow` 会静默失败，窗口留在屏幕上且是 topmost，谁也关不掉——
     v1.4.1 的「菜单套娃」就是这么来的。
-11. **弹窗类菜单不要指望 `SetForegroundWindow`**：托盘进程在后台，系统会拒绝，
-    拿不到 `WM_ACTIVATE` 就没有「点外面自动关」。用 `WH_MOUSE_LL` 低级鼠标钩子判点位
-    （见 `TrayMenuWindow.InstallMouseHook`），窗口清零后摘钩。
+11. **弹窗类菜单不要指望 `SetForegroundWindow`**：托盘进程在后台，系统常会拒绝，
+    拿不到 `WM_ACTIVATE` 就没有「点外面自动关」。「点外面关闭」用
+    `SetWinEventHook(EVENT_SYSTEM_FOREGROUND)` 前台切换通知（见
+    `TrayMenuWindow.InstallWinEventHook`），窗口清零后摘钩。
+12. **禁止 `WH_MOUSE_LL` 低级鼠标钩子**（v1.4.2 的教训）：它拦截全系统每一次鼠标事件，
+    回调稍有延迟整个桌面鼠标都会「被拖住」。感知外界变化用 WinEvent（不碰输入流）。
+13. **消息泵必须阻塞式 `GetMessage`**，不能 `PeekMessage + Sleep` 轮询：
+    WinEvent 回调、跨线程 PostMessage 的落地延迟全由泵决定，轮询平均多拖半个周期。
+    退出时投递 `WM_QUIT`（见 `Program.RunMessageLoop` / `ExitAgent`）。
+14. `TrayMenuWindow.ShowAt` 的 X 坐标有两种语义：根菜单按**中心点**居中（托盘图标），
+    子菜单传**左边**，用 `centerX` 参数区分。搞混了子菜单会左移半个宽度压住父菜单。
 
 ## 4. 收尾动作（每次会话结束前）
 
