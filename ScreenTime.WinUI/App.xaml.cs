@@ -243,7 +243,7 @@ public partial class App : Application
         {
             var path = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
                 "ScreenTime", "error.log");
-            File.AppendAllText(path, $"{DateTime.Now}\n{ex}\n\n");
+            LogFile.Append(path, $"{DateTime.Now}\n{ex}\n\n");
         }
         catch { }
     }

@@ -11,11 +11,42 @@ public sealed class AppRankItem : INotifyPropertyChanged
 {
     public int Id { get; }
     public string Name { get; }
-    public string Duration { get; }
-    public double BarPercent { get; }
+
+    private string _duration = "";
+    /// <summary>可写：30 秒刷新时原地更新，避免整表重建（重建会丢掉已提取的图标）。</summary>
+    public string Duration
+    {
+        get => _duration;
+        private set
+        {
+            if (_duration == value) return;
+            _duration = value;
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(Duration)));
+        }
+    }
+
+    private double _barPercent;
+    public double BarPercent
+    {
+        get => _barPercent;
+        private set
+        {
+            if (Math.Abs(_barPercent - value) < 0.01) return;
+            _barPercent = value;
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(BarPercent)));
+        }
+    }
+
     public string ExePath { get; }
     public string ProcessName { get; }
     public string IconSource { get; }
+
+    /// <summary>刷新已有的行：只改时长和占比，图标保持不动。</summary>
+    public void Update(string duration, double barPercent)
+    {
+        Duration = duration;
+        BarPercent = barPercent;
+    }
 
     private ImageSource? _icon;
     public ImageSource? Icon

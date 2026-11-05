@@ -17,6 +17,26 @@ public partial class SettingsPage : Page
     {
         InitializeComponent();
         Loaded += OnLoaded;
+        AboutVersionText.Text = "ScreenTime " + CurrentVersion();
+    }
+
+    /// <summary>
+    /// 版本号从程序集读，别再写死在 XAML 里——v1.3.5 那次就是忘了同步「关于」页，
+    /// 界面显示的版本比实际装的老一版。
+    /// </summary>
+    private static string CurrentVersion()
+    {
+        try
+        {
+            var v = typeof(SettingsPage).Assembly.GetName().Version;
+            if (v is null) return "未知";
+            // 1.3.6.0 → 1.3.6
+            return v.Build > 0 ? $"{v.Major}.{v.Minor}.{v.Build}" : $"{v.Major}.{v.Minor}";
+        }
+        catch
+        {
+            return "未知";
+        }
     }
 
     /// <summary>
@@ -303,13 +323,63 @@ public partial class SettingsPage : Page
             ? $"{FormatBytes(h.DbBytes)} · 明细 {h.SegmentCount:N0} 条 · 明细永久保留"
             : $"{FormatBytes(h.DbBytes)} · 明细 {h.SegmentCount:N0} 条 · 已折叠 {h.FoldedDays} 天 · 保留 {h.RetentionDays} 天";
 
-        HealthErrorText.Text = h.CollectErrorCount == 0
-            ? "无"
-            : $"{h.CollectErrorCount} 次 · {h.LastCollectError}";
+        HealthErrorText.Text = BuildErrorText(h);
 
         HealthWarnText.Text = h.Warnings.Count == 0
             ? "未发现异常"
             : string.Join("\n", h.Warnings);
+    }
+
+    /// <summary>
+    /// 「最近异常」= 采集错误 + 界面崩溃。
+    /// 界面崩溃只写 <c>error.log</c>，用户完全看不到——这里把最后一条贴出来，
+    /// 才能回答「刚才是不是闪退过」。
+    /// </summary>
+    private static string BuildErrorText(Database.HealthSnapshot h)
+    {
+        var parts = new List<string>();
+        if (h.CollectErrorCount > 0)
+            parts.Add($"采集 {h.CollectErrorCount} 次 · {h.LastCollectError}");
+
+        if (LastUiCrash() is { } crash)
+            parts.Add(crash);
+
+        return parts.Count == 0 ? "无" : string.Join("\n", parts);
+    }
+
+    /// <summary>读 error.log 最后一条崩溃记录（只看尾部 8 KB，避免整份读入）。</summary>
+    private static string? LastUiCrash()
+    {
+        try
+        {
+            var path = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+                "ScreenTime", "error.log");
+            if (!File.Exists(path)) return null;
+
+            using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+            var take = (int)Math.Min(fs.Length, 8192);
+            if (take <= 0) return null;
+            fs.Seek(-take, SeekOrigin.End);
+            var buf = new byte[take];
+            var read = fs.Read(buf, 0, take);
+            var text = System.Text.Encoding.UTF8.GetString(buf, 0, read);
+
+            // 写入格式："{时间}\n{异常}\n\n"
+            var blocks = text.Split("\n\n", StringSplitOptions.RemoveEmptyEntries);
+            for (var i = blocks.Length - 1; i >= 0; i--)
+            {
+                var lines = blocks[i].Split('\n', StringSplitOptions.RemoveEmptyEntries);
+                if (lines.Length < 2) continue;
+                if (!DateTime.TryParse(lines[0].Trim(), out var when)) continue;
+
+                var first = lines[1].Trim();
+                if (first.Length > 90) first = first[..90] + "…";
+                return $"界面 {when:MM-dd HH:mm} · {first}";
+            }
+        }
+        catch { }
+        return null;
     }
 
     private static DateTime? ParseUtc(string raw)

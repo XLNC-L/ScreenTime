@@ -45,6 +45,10 @@ dotnet test ScreenTime.Tests\ScreenTime.Tests.csproj -c Release
 4. **不要在 `D:\ScreenTime` 里改代码。** 那是正在运行的发布产物，只读。
 5. **版本号在 3 个 csproj 里各写了一份**（`ScreenTime.WinUI`、`ScreenTime.Agent`、`ScreenTime.Collect` 的 `<Version>`），改版本必须三处同步。
 6. 依赖用 `packages.lock.json` 锁定，改了 PackageReference 记得把锁文件一起提交。
+7. **写日志统一用 `ScreenTime.LogFile`**，不要直接 `File.AppendAllText`——它负责 2 MB 滚动，
+   否则常驻进程的日志会无限增长。
+8. **部署要按发布口径**：`dotnet publish -c Release -r win-x64`（项目开了 `PublishReadyToRun`），
+   `dotnet build` 出来的不是 R2R；换版本号时 `ScreenTime.{WinUI,Agent,Collect,Core}.dll` 必须整套替换。
 7. **安装器界面文案靠 `installer\languages\ChineseSimplified.isl`**（Inno 官方包不含中文）。
    不要改回 `compiler:Default.isl`，那会让向导变回英文。
 8. **不要删 `Microsoft.UI.Xaml.Phone.dll`**：名字像手机专用，实际是 WinUI 启动期硬依赖，

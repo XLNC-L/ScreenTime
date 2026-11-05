@@ -100,7 +100,7 @@ public sealed class BrowserTabService
                 Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
                 "ScreenTime", "browser-uia.log");
             System.IO.Directory.CreateDirectory(System.IO.Path.GetDirectoryName(path)!);
-            System.IO.File.AppendAllText(path, $"{DateTime.Now:HH:mm:ss} {line}\n");
+            LogFile.Append(path, $"{DateTime.Now:HH:mm:ss} {line}\n");
         }
         catch { }
     }

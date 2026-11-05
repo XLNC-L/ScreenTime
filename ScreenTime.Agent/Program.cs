@@ -216,13 +216,14 @@ internal static class Program
         _db = new Database(CommandLineValue(args, "--db="));
         _db.Init();
         // 结构升级/迁移可能较慢，后台执行；采集心跳 5 秒后才首次写库，缓冲充足
-        _ = Task.Run(() => { try { _db.Migrate(); } catch { } });
+        _ = Task.Run(() => { try { _db.Migrate(); } catch (Exception ex) { WriteError(ex); } });
 
         _watcher = new WatcherService(_db);
         // 用途标注写库，由 UI 进程轮询弹出（采集线程直接写，无 UI 线程概念）
         _watcher.PurposePrompt += (segmentId, processName) =>
         {
-            try { _db.SetSetting("pending_purpose", $"{segmentId}|{processName}"); } catch { }
+            try { _db.SetSetting("pending_purpose", $"{segmentId}|{processName}"); }
+            catch (Exception ex) { WriteError(ex); }
         };
         _watcher.Start();
 
@@ -235,7 +236,10 @@ internal static class Program
         _db.SetSetting("agent_started_at", Database.ToIso(DateTime.UtcNow));
         var heartbeatTimer = new System.Threading.Timer(_ =>
         {
-            try { _db.SetSetting("agent_heartbeat", Database.ToIso(DateTime.UtcNow)); } catch { }
+            try { _db.SetSetting("agent_heartbeat", Database.ToIso(DateTime.UtcNow)); }
+            catch (Exception ex) { WriteError(ex); }
+            // 悬停提示跟着心跳走：30 秒一次，成本与心跳同级
+            UpdateTrayTooltip();
         }, null, TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(30));
 
         // 明细保留：每天最多跑一次，超过保留期的明细折叠成日汇总后再删除
@@ -254,7 +258,7 @@ internal static class Program
         // UWP 图标回填 + 自启注册：都不挡采集启动
         _ = Task.Run(() =>
         {
-            try { UwpAppService.RequestBackfill(_db); } catch { }
+            try { UwpAppService.RequestBackfill(_db); } catch (Exception ex) { WriteError(ex); }
         });
         EnsureSelfAutoStart();
 
@@ -263,6 +267,8 @@ internal static class Program
         _tray = new TrayIcon("ScreenTime", File.Exists(iconPath) ? iconPath : "", WriteLog);
         _tray.OpenRequested += OpenMainWindow;
         _tray.ExitRequested += ExitAgent;
+        _tray.PauseRequested += TrayPause;
+        UpdateTrayTooltip();
 
         WriteLog($"agent started pid={Environment.ProcessId}");
 
@@ -303,7 +309,7 @@ internal static class Program
                 _historyImport?.Start();
             }
         }
-        catch { }
+        catch (Exception ex) { WriteError(ex); }
     }
 
     /// <summary>
@@ -434,6 +440,77 @@ internal static class Program
     {
         try { _db.AddSessionEvent("shutdown"); } catch { }
         _exit = true;
+    }
+
+    /// <summary>
+    /// 托盘菜单请求暂停（分钟数，0 表示恢复）。
+    /// 只写 settings，由采集器热重载生效——和 UI 改设置的通道保持一致，
+    /// 这样即使采集线程正忙，暂停也不会被卡住。
+    /// </summary>
+    private static void TrayPause(int minutes)
+    {
+        try
+        {
+            if (minutes <= 0)
+            {
+                _db.SetSetting("paused_until", "");
+                WriteLog("tray: 恢复统计");
+            }
+            else
+            {
+                var until = DateTime.UtcNow.AddMinutes(minutes);
+                _db.SetSetting("paused_until", Database.ToIso(until));
+                WriteLog($"tray: 暂停统计 {minutes} 分钟（至 {until.ToLocalTime():HH:mm}）");
+            }
+            _db.SetSetting("settings_version", DateTime.UtcNow.Ticks.ToString());
+            UpdateTrayTooltip();
+        }
+        catch (Exception ex) { WriteError(ex); }
+    }
+
+    /// <summary>当前有效的暂停截止时间；已过期或未设置返回 null。</summary>
+    private static DateTime? PausedUntil()
+    {
+        try
+        {
+            var raw = _db.GetSetting("paused_until", "");
+            if (string.IsNullOrWhiteSpace(raw)) return null;
+            var until = Database.ParseIso(raw);
+            return until > DateTime.UtcNow ? until : null;
+        }
+        catch { return null; }
+    }
+
+    /// <summary>把「今日已用时长 / 暂停状态」推到托盘悬停提示。</summary>
+    private static void UpdateTrayTooltip()
+    {
+        try
+        {
+            if (_tray is null) return;
+
+            string text;
+            if (PausedUntil() is { } until)
+            {
+                text = $"已暂停至 {until.ToLocalTime():HH:mm}";
+            }
+            else
+            {
+                var apps = _db.QueryAppUsage(DateTime.Today.ToUniversalTime(), DateTime.UtcNow);
+                text = "今日 " + FormatDuration(apps.Sum(a => a.TotalSeconds));
+            }
+            _tray.UpdateTooltip("ScreenTime · " + text);
+        }
+        catch (Exception ex) { WriteError(ex); }
+    }
+
+    private static string FormatDuration(double seconds)
+    {
+        var total = (int)Math.Round(seconds);
+        if (total <= 0) return "暂无记录";
+        if (total < 60) return "不足 1 分钟";
+        var hours = total / 3600;
+        var minutes = total % 3600 / 60;
+        return hours > 0 ? $"{hours} 小时 {minutes} 分" : $"{minutes} 分钟";
     }
 
     /// <summary>
@@ -570,8 +647,7 @@ internal static class Program
         try
         {
             var dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "ScreenTime");
-            Directory.CreateDirectory(dir);
-            File.AppendAllText(Path.Combine(dir, "agent.log"),
+            LogFile.Append(Path.Combine(dir, "agent.log"),
                 $"{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff} {msg}\n");
         }
         catch { }

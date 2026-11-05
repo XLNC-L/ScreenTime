@@ -177,7 +177,7 @@ public static class AutoStartService
             var dir = Path.Combine(
                 Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "ScreenTime");
             Directory.CreateDirectory(dir);
-            File.AppendAllText(Path.Combine(dir, "autostart.log"),
+            LogFile.Append(Path.Combine(dir, "autostart.log"),
                 $"{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff} {message}\n");
         }
         catch

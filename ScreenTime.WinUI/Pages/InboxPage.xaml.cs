@@ -11,10 +11,14 @@ public partial class InboxPage : Page
 
     private record InboxItem(int Id, string Name, string ProcessName, ImageSource? Icon, string[] Categories);
 
+    /// <summary>绑定集合：只建一次，刷新时增量同步（见 ListSync）。</summary>
+    private readonly System.Collections.ObjectModel.ObservableCollection<InboxItem> _inboxRows = new();
+
     public InboxPage()
     {
         InitializeComponent();
         BatchBox.ItemsSource = CategoryService.Categories;
+        InboxList.ItemsSource = _inboxRows;
         Loaded += (_, _) => LoadInbox();
     }
 
@@ -74,7 +78,7 @@ public partial class InboxPage : Page
             a.Id, a.Name, a.ProcessName, SafeIcon(a.ExePath),
             CategoryService.Categories.ToArray())).ToList();
 
-        InboxList.ItemsSource = items;
+        UI.ListSync.Apply(_inboxRows, items, i => i.Id);
         EmptyPanel.Visibility = items.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
         InboxList.Visibility = items.Count == 0 ? Visibility.Collapsed : Visibility.Visible;
         BatchBox.SelectedIndex = -1;

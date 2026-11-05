@@ -17,6 +17,9 @@ public partial class HistoryPage : Page
     private CancellationTokenSource? _iconLoadCts;
     private List<AppRankItem> _allRows = new();
 
+    /// <summary>应用列表绑定集合：只建一次，筛选/搜索时增量同步。</summary>
+    private readonly System.Collections.ObjectModel.ObservableCollection<AppRankItem> _visibleRows = new();
+
     /// <summary>应用 id → 分类，供分类下钻筛选（AppRankItem 不带分类字段，避免污染共用模型）。</summary>
     private Dictionary<int, string> _categoryByApp = new();
 
@@ -42,6 +45,7 @@ public partial class HistoryPage : Page
         InitializeComponent();
         // 不做导航缓存（默认 Disabled）：见 TodayPage 注释——缓存会让托盘隐藏时页面释放不掉。
         // 切页重建成本可接受，筛选状态在页面内重建（日期默认近 7 天）。
+        AppList.ItemsSource = _visibleRows;
         Donut.SliceTapped += cat => App.Current.DrillToCategory(cat);
         FromPicker.Date = new DateTimeOffset(DateTime.Today.AddDays(-6));
         ToPicker.Date = new DateTimeOffset(DateTime.Today);
@@ -521,7 +525,7 @@ public partial class HistoryPage : Page
             rows = rows.Where(a => a.Name.Contains(search, StringComparison.OrdinalIgnoreCase) ||
                                    a.ProcessName.Contains(search, StringComparison.OrdinalIgnoreCase));
 
-        AppList.ItemsSource = rows.ToList();
+        ListSync.Apply(_visibleRows, rows.ToList(), r => r.Id);
     }
 
     public void Reload() => RequestQuery();

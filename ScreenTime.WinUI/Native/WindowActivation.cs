@@ -126,7 +126,7 @@ internal static class WindowActivation
             var dir = Path.Combine(
                 Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "ScreenTime");
             Directory.CreateDirectory(dir);
-            File.AppendAllText(Path.Combine(dir, "activate.log"),
+            LogFile.Append(Path.Combine(dir, "activate.log"),
                 $"{DateTime.Now:HH:mm:ss.fff} {message}\n");
         }
         catch { }

@@ -29,6 +29,9 @@ public partial class TodayPage : Page
 
     private List<TimelineRow> _timeline = new();
 
+    /// <summary>应用排行绑定的集合：只建一次，刷新时增量同步（见 ListSync）。</summary>
+    private readonly System.Collections.ObjectModel.ObservableCollection<AppRankItem> _rankRows = new();
+
     // 时间线游标状态：全量重建后缓存范围参数，秒级 tick 只平移游标、不重建时间线
     private Border? _cursor;
     private DateTime _tlRangeStart;
@@ -42,6 +45,7 @@ public partial class TodayPage : Page
         // 关闭窗口到托盘时会置空 ContentFrame.Content 释放页面，
         // 一旦 Required 缓存，Frame 会强引用页面实例，显示态内存（时间线/排行/图表）就永远还不了。
         // 切页重建成本已被查询提速 + 虚拟化摊薄，可接受。
+        AppList.ItemsSource = _rankRows;
 
         Donut.SliceTapped += cat => App.Current.DrillToCategory(cat);
 
@@ -235,8 +239,10 @@ public partial class TodayPage : Page
                     a.TotalSeconds / maxSec * 100, p.ExePath, p.ProcessName, p.IconSource);
             })
             .ToList();
-        AppList.ItemsSource = rows;
-        FillIconsAsync(rows);
+        // 增量同步：只增删改变化的行，避免整表重建（图标不用重取，滚动位置也不跳）
+        ListSync.Apply(_rankRows, rows, r => r.Id,
+            (oldRow, newRow) => oldRow.Update(newRow.Duration, newRow.BarPercent));
+        FillIconsAsync(_rankRows.ToList());
 
         LoadPurpose(snapshot.Purposes);
 

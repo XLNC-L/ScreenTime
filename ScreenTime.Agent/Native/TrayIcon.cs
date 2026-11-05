@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using ScreenTime.Services;
 
 namespace ScreenTime.Agent.Native;
 
@@ -64,6 +65,8 @@ public sealed class TrayIcon : IDisposable
     private const uint MF_SEPARATOR = 0x0800;
     /// <summary>看门狗节拍消息（WM_APP + 2），由线程池投递到消息线程。</summary>
     private const uint WM_WATCHDOG = 0x8000 + 0x2;
+    /// <summary>更新提示文字（WM_APP + 3），同样由其他线程投递到消息线程。</summary>
+    private const uint WM_UPDATE_TIP = 0x8000 + 0x3;
 
     private static readonly string WindowClassName = "ScreenTimeAgentTrayWnd_" + Guid.NewGuid().ToString("N");
     private static WndProcDelegate? _wndProcHolder; // 防 GC 回收
@@ -76,7 +79,7 @@ public sealed class TrayIcon : IDisposable
     private readonly IntPtr _hMenu;
     private IntPtr _hIcon;
     private readonly uint _callbackMsg;
-    private readonly string _tooltip;
+    private string _tooltip;
     private readonly object _iconGate = new();
     private Timer? _watchdog;
     private bool _iconPresent;
@@ -84,6 +87,9 @@ public sealed class TrayIcon : IDisposable
 
     public event Action? OpenRequested;
     public event Action? ExitRequested;
+
+    /// <summary>右键菜单请求暂停统计：参数为分钟数，0 表示恢复。</summary>
+    public event Action<int>? PauseRequested;
 
     /// <summary>诊断日志（由 Program 接到 agent.log）。</summary>
     public Action<string>? Log { get; set; }
@@ -194,9 +200,10 @@ public sealed class TrayIcon : IDisposable
     /// </summary>
     private void EnsureIcon(string reason)
     {
-        if (_disposed || _hWnd == IntPtr.Zero || _iconPresent) return;
+        if (_disposed || _hWnd == IntPtr.Zero) return;
 
-        if (FindWindowW("Shell_TrayWnd", null) == IntPtr.Zero) return;
+        var shellReady = FindWindowW("Shell_TrayWnd", null) != IntPtr.Zero;
+        if (!TrayRecoveryPolicy.ShouldRegister(_iconPresent, shellReady, _disposed)) return;
 
         Log?.Invoke($"tray: 图标缺失，重新登记 ({reason})");
         _iconPresentLogged = false;
@@ -288,10 +295,41 @@ public sealed class TrayIcon : IDisposable
         var menu = CreatePopupMenu();
         AppendMenuW(menu, MF_STRING, 1, "打开统计");
         AppendMenuW(menu, MF_SEPARATOR, 0, null);
+        AppendMenuW(menu, MF_STRING, 4, "暂停统计 30 分钟");
+        AppendMenuW(menu, MF_STRING, 5, "暂停统计 1 小时");
+        AppendMenuW(menu, MF_STRING, 6, "恢复统计");
+        AppendMenuW(menu, MF_SEPARATOR, 0, null);
         AppendMenuW(menu, MF_STRING, 3, "重新加载托盘图标");
         AppendMenuW(menu, MF_SEPARATOR, 0, null);
         AppendMenuW(menu, MF_STRING, 2, "退出 ScreenTime");
         return menu;
+    }
+
+    /// <summary>更新悬停提示（可跨线程调用：内部只 PostMessage，shell 调用仍在消息线程）。</summary>
+    public void UpdateTooltip(string text)
+    {
+        var next = (text ?? "").Trim();
+        if (next.Length > 120) next = next[..120];   // szTip 上限 128，留余量
+        if (next == _tooltip) return;
+
+        _tooltip = next;
+        Log?.Invoke($"tray: tooltip = {next}");
+        if (_hWnd != IntPtr.Zero && !_disposed)
+            PostMessageW(_hWnd, WM_UPDATE_TIP, IntPtr.Zero, IntPtr.Zero);
+    }
+
+    /// <summary>把当前提示文字推给 shell；失败说明图标已不在，转由兜底重试补登记。</summary>
+    private void ApplyTip()
+    {
+        if (_disposed || _hWnd == IntPtr.Zero) return;
+
+        var data = BuildData(NIF_TIP);
+        var ok = Shell_NotifyIcon(NIM_MODIFY, ref data);
+        if (!ok && _iconPresent)
+        {
+            _iconPresent = false;
+            Log?.Invoke("tray: 更新提示失败，图标可能已丢失，等兜底重试补登记");
+        }
     }
 
     /// <summary>
@@ -348,6 +386,9 @@ public sealed class TrayIcon : IDisposable
         if (cmd == 1) OpenRequested?.Invoke();
         else if (cmd == 2) ExitRequested?.Invoke();
         else if (cmd == 3) ReloadIcon();
+        else if (cmd == 4) PauseRequested?.Invoke(30);
+        else if (cmd == 5) PauseRequested?.Invoke(60);
+        else if (cmd == 6) PauseRequested?.Invoke(0);
     }
 
     private static IntPtr WndProc(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam)
@@ -369,6 +410,13 @@ public sealed class TrayIcon : IDisposable
         if (msg == WM_WATCHDOG)
         {
             _current?.EnsureIcon("watchdog");
+            return IntPtr.Zero;
+        }
+
+        // 提示文字更新：同样在消息线程里推给 shell
+        if (msg == WM_UPDATE_TIP)
+        {
+            _current?.ApplyTip();
             return IntPtr.Zero;
         }
 

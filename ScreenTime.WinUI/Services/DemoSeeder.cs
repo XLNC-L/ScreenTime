@@ -176,7 +176,7 @@ public static class DemoSeeder
         {
             var dir = Path.GetDirectoryName(db.DbPath);
             if (string.IsNullOrEmpty(dir)) return;
-            File.AppendAllText(Path.Combine(dir, "demo-seed.log"), line + Environment.NewLine);
+            LogFile.AppendLine(Path.Combine(dir, "demo-seed.log"), line);
         }
         catch { }
     }

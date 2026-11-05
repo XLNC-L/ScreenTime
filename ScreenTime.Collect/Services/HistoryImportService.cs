@@ -307,7 +307,7 @@ public sealed class HistoryImportService : IDisposable
         try
         {
             Directory.CreateDirectory(Path.GetDirectoryName(LogPath)!);
-            File.AppendAllText(LogPath, $"{DateTime.Now:yyyy-MM-dd HH:mm:ss} {line}\n");
+            LogFile.Append(LogPath, $"{DateTime.Now:yyyy-MM-dd HH:mm:ss} {line}\n");
         }
         catch { }
     }

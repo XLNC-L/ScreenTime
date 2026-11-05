@@ -48,6 +48,8 @@ public sealed class WatcherService : IDisposable
     private bool _audioEnabled = true;
     private bool _purposeAskEnabled;
     private bool _browserTabEnabled = true;
+    /// <summary>用户手动暂停统计的截止时间（UTC）；为空表示未暂停。</summary>
+    private DateTime? _pausedUntil;
     private string _lastScrubDay = "";
     private DateTime _lastCompactUtc = DateTime.MinValue;
 
@@ -103,7 +105,7 @@ public sealed class WatcherService : IDisposable
             foreach (var key in _switchCounts.Keys.Where(k => !k.StartsWith(today)).ToList())
                 _switchCounts.Remove(key);
         }
-        catch { }
+        catch (Exception ex) { ReportCollectError("switches", ex); }
     }
 
     /// <summary>记录「这条采集通道还活着」，供设置页的运行状态卡片判断是否漏记。</summary>
@@ -166,6 +168,7 @@ public sealed class WatcherService : IDisposable
         _purposeAskEnabled = _db.GetSetting("purpose_ask_enabled", "false") == "true";
         _browserTabEnabled = _db.GetSetting("browser_tab_enabled", "true") != "false";
         _excludedDomains = WebPrivacy.ResolveList(_db.GetSetting(WebPrivacy.SettingKey, ""));
+        ReloadPause();
 
         _fgWatcher.ForegroundChanged += OnForegroundChanged;
         _fgWatcher.Start();
@@ -226,6 +229,14 @@ public sealed class WatcherService : IDisposable
             _purposeAskEnabled = _db.GetSetting("purpose_ask_enabled", "false") == "true";
             _browserTabEnabled = _db.GetSetting("browser_tab_enabled", "true") != "false";
             _excludedDomains = WebPrivacy.ResolveList(_db.GetSetting(WebPrivacy.SettingKey, ""));
+            var wasPaused = IsPaused(DateTime.UtcNow);
+            ReloadPause();
+            // 从暂停切回运行：立刻关掉暂停期间残留的片段，避免把暂停时间算进上一段
+            if (wasPaused && !IsPaused(DateTime.UtcNow))
+            {
+                CloseForeground();
+                CloseAllAudio(DateTime.UtcNow);
+            }
             if (!_audioEnabled)
             {
                 foreach (var seg in _audioSegments.Values)
@@ -234,6 +245,22 @@ public sealed class WatcherService : IDisposable
             }
         }
     }
+
+    private void ReloadPause()
+    {
+        try
+        {
+            var raw = _db.GetSetting("paused_until", "");
+            _pausedUntil = string.IsNullOrWhiteSpace(raw) ? null : Database.ParseIso(raw);
+        }
+        catch
+        {
+            _pausedUntil = null;
+        }
+    }
+
+    /// <summary>用户是否手动暂停了统计（时间到了自动失效，不需要额外清理）。</summary>
+    private bool IsPaused(DateTime nowUtc) => _pausedUntil is { } until && until > nowUtc;
 
     private void OnForegroundChanged()
     {
@@ -299,6 +326,13 @@ public sealed class WatcherService : IDisposable
 
         if (ForegroundPolicy.ShouldPause(Win32.GetIdleSeconds(), _idleLimitSeconds,
                 _session.IsLocked, _session.IsSuspended))
+        {
+            CloseForeground();
+            return;
+        }
+
+        // 用户手动暂停：等同于「现在没在用」，把开放片段收掉，暂停期间不产生新片段
+        if (IsPaused(now))
         {
             CloseForeground();
             return;
@@ -408,7 +442,7 @@ public sealed class WatcherService : IDisposable
         }
 
         // 睡眠时无声音输出；锁屏后继续放歌仍计时（按需求）。
-        if (!_audioEnabled || _session.IsSuspended)
+        if (!_audioEnabled || _session.IsSuspended || IsPaused(now))
         {
             CloseAllAudio(now);
             return;

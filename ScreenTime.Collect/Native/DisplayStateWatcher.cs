@@ -183,8 +183,7 @@ public sealed class DisplayStateWatcher : IDisposable
                 Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "ScreenTime");
             Directory.CreateDirectory(dir);
             var file = Path.Combine(dir, "display-state.log");
-            if (File.Exists(file) && new FileInfo(file).Length > 512 * 1024) File.Delete(file);
-            File.AppendAllText(file, $"{DateTime.Now:yyyy-MM-dd HH:mm:ss} {line}{Environment.NewLine}");
+            LogFile.Append(file, $"{DateTime.Now:yyyy-MM-dd HH:mm:ss} {line}{Environment.NewLine}");
         }
         catch
         {
