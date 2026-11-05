@@ -47,6 +47,15 @@
                         <settings:SettingsCard Header="网页地址回填" Description="从 Chrome/Edge 本地历史库为未读到地址的浏览器片段补全网页地址；仅本机只读、不上传，邮件/网银等敏感域名会跳过">
                             <ToggleSwitch x:Name="HistoryBackfillSwitch" OnContent="开" OffContent="关" Toggled="HistoryBackfillSwitch_Toggled" />
                         </settings:SettingsCard>
+                        <settings:SettingsCard Header="刷新间隔" Description="今日页卡片和托盘提示按这个间隔刷新；图表按两倍间隔刷新，避免频繁重绘">
+                            <ComboBox x:Name="RefreshBox" Width="160" SelectionChanged="RefreshBox_SelectionChanged">
+                                <ComboBoxItem Tag="5" Content="5 秒" />
+                                <ComboBoxItem Tag="10" Content="10 秒" />
+                                <ComboBoxItem Tag="15" Content="15 秒" />
+                                <ComboBoxItem Tag="30" Content="30 秒" />
+                                <ComboBoxItem Tag="60" Content="60 秒" />
+                            </ComboBox>
+                        </settings:SettingsCard>
                     </StackPanel>
                 </Border>
             </StackPanel>

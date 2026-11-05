@@ -105,7 +105,11 @@ public sealed class TrayIcon : IDisposable
         _tooltip = tooltip ?? "";
         _callbackMsg = 0x8000 + 0x1; // WM_APP + 1
         _current = this;             // WndProc 是静态的，需要实例才能回调
+        EnableDarkMenus();
         _hWnd = CreateMessageWindow();
+        // 弹菜单的窗口本身要先有深色主题，弹出菜单才会继承；
+        // 只调进程级的 SetPreferredAppMode 不够（实测菜单仍是浅色经典样式）。
+        if (_hWnd != IntPtr.Zero) ApplyDarkWindowTheme(_hWnd);
         _hIcon = LoadIconFromFile(iconPath);
         _hMenu = BuildMenu();
 
@@ -290,9 +294,69 @@ public sealed class TrayIcon : IDisposable
         return hIcon;
     }
 
-    private IntPtr BuildMenu()
+    /// <summary>
+    /// 把进程内的原生菜单切到 Windows 11 深色 Fluent 外观（圆角、深色底、系统字体），
+    /// 和 WinUI3 的 MenuFlyout 是同一套视觉语言。
+    ///
+    /// 走 uxtheme 的 SetPreferredAppMode（导出序号 135）/ FlushMenuThemes（136），
+    /// 这两个是未公开导出：取不到就静默跳过，菜单退回系统默认外观，功能不受影响。
+    /// 真要用 MenuFlyout 得有一个 WinUI 窗口，而常驻托盘的是纯 Win32 的采集进程，
+    /// 为了一顿右键菜单把 WinUI 拉起来不划算（v1.2.0 瘦身就是把这个进程摘出去的）。
+    /// </summary>
+    private static void EnableDarkMenus()
     {
-        var menu = CreatePopupMenu();
+        if (_darkMenuApplied) return;
+        _darkMenuApplied = true;
+        try
+        {
+            var ux = LoadLibraryW("uxtheme.dll");
+            if (ux == IntPtr.Zero) return;
+
+            var setMode = GetProcAddress(ux, "#135");
+            if (setMode != IntPtr.Zero)
+            {
+                var forceDark = Marshal.GetDelegateForFunctionPointer<SetPreferredAppModeProc>(setMode);
+                forceDark(2);   // 0 默认 / 1 允许深色 / 2 强制深色
+            }
+
+            var flush = GetProcAddress(ux, "#136");
+            if (flush != IntPtr.Zero)
+                Marshal.GetDelegateForFunctionPointer<FlushMenuThemesProc>(flush)();
+        }
+        catch
+        {
+            // 老系统没有这些导出，保持默认外观
+        }
+    }
+
+    private static bool _darkMenuApplied;
+    private delegate int SetPreferredAppModeProc(int mode);
+    private delegate void FlushMenuThemesProc();
+
+    /// <summary>给窗口挂深色主题（uxtheme 的 DarkMode_Explorer 类），弹出菜单会沿用。</summary>
+    private static void ApplyDarkWindowTheme(IntPtr hWnd)
+    {
+        try
+        {
+            SetWindowTheme(hWnd, "DarkMode_Explorer", null);
+        }
+        catch
+        {
+            // 老系统没有该主题类：保持默认
+        }
+    }
+
+    [DllImport("uxtheme.dll", CharSet = CharSet.Unicode)]
+    private static extern int SetWindowTheme(IntPtr hWnd, string? pszSubAppName, string? pszSubIdList);
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern IntPtr LoadLibraryW(string lpLibFileName);
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Ansi, SetLastError = true)]
+    private static extern IntPtr GetProcAddress(IntPtr hModule, string lpProcName);
+
+    private IntPtr BuildMenu()
+    {        var menu = CreatePopupMenu();
         AppendMenuW(menu, MF_STRING, 1, "打开统计");
         AppendMenuW(menu, MF_SEPARATOR, 0, null);
         AppendMenuW(menu, MF_STRING, 4, "暂停统计 30 分钟");
@@ -376,19 +440,46 @@ public sealed class TrayIcon : IDisposable
     private void ShowContextMenu()
     {
         GetCursorPos(out var pt);
+
+        // 先走自绘菜单（WinUI 观感）；极端情况下失败再退回原生菜单
+        if (TrayMenuWindow.Show(pt.X, pt.Y, MenuEntries, OnMenuPick, Log)) return;
+
         // 弹菜单前必须把消息窗口设成前台，否则点击菜单外部不会自动收起
         SetForegroundWindow(_hWnd);
         var cmd = TrackPopupMenu(_hMenu, TPM_RIGHTBUTTON | TPM_RETURNCMD,
             pt.X, pt.Y, 0, _hWnd, IntPtr.Zero);
         // 官方要求：菜单结束后投递 WM_NULL，避免菜单残留
         PostMessageW(_hWnd, 0x0000, IntPtr.Zero, IntPtr.Zero);
-        Log?.Invoke($"tray: menu cmd={cmd}");
-        if (cmd == 1) OpenRequested?.Invoke();
-        else if (cmd == 2) ExitRequested?.Invoke();
-        else if (cmd == 3) ReloadIcon();
-        else if (cmd == 4) PauseRequested?.Invoke(30);
-        else if (cmd == 5) PauseRequested?.Invoke(60);
-        else if (cmd == 6) PauseRequested?.Invoke(0);
+        OnMenuPick((int)cmd);
+    }
+
+    /// <summary>菜单项定义：Id 为 0 的行是分隔线。</summary>
+    private static readonly TrayMenuWindow.Entry[] MenuEntries =
+    {
+        new("打开统计", 1),
+        default,
+        new("暂停统计 30 分钟", 4),
+        new("暂停统计 1 小时", 5),
+        new("恢复统计", 6),
+        default,
+        new("重新加载托盘图标", 3),
+        default,
+        new("退出 ScreenTime", 2),
+    };
+
+    private void OnMenuPick(int id)
+    {
+        if (id <= 0) return;                     // 0 = 原生命令为空，int.MinValue = 只是关掉菜单
+        Log?.Invoke($"tray: menu cmd={id}");
+        switch (id)
+        {
+            case 1: OpenRequested?.Invoke(); break;
+            case 2: ExitRequested?.Invoke(); break;
+            case 3: ReloadIcon(); break;
+            case 4: PauseRequested?.Invoke(30); break;
+            case 5: PauseRequested?.Invoke(60); break;
+            case 6: PauseRequested?.Invoke(0); break;
+        }
     }
 
     private static IntPtr WndProc(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam)

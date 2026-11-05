@@ -70,6 +70,11 @@ public partial class SettingsPage : Page
             foreach (ComboBoxItem item in RetentionBox.Items)
                 if ((string)item.Tag == retention) RetentionBox.SelectedItem = item;
 
+            var refresh = db.GetSetting("refresh_seconds", "30");
+            foreach (ComboBoxItem item in RefreshBox.Items)
+                if ((string)item.Tag == refresh) RefreshBox.SelectedItem = item;
+            if (RefreshBox.SelectedItem is null) RefreshBox.SelectedIndex = 3;  // 兜底 30 秒
+
             var detailRetention = db.GetSetting("detail_retention_days", "60");
             foreach (ComboBoxItem item in DetailRetentionBox.Items)
                 if ((string)item.Tag == detailRetention) DetailRetentionBox.SelectedItem = item;
@@ -238,6 +243,21 @@ public partial class SettingsPage : Page
         await RunDbAsync(() =>
         {
             App.Current.Database.SetSetting("idle_limit", value);
+            App.SignalSettingsChanged();
+        });
+    }
+
+    /// <summary>
+    /// 刷新间隔：今日页读这个值决定数字刷新节拍，Agent 读它决定托盘提示多久更新一次。
+    /// 必须 SignalSettingsChanged，否则采集器要等下次启动才认。
+    /// </summary>
+    private async void RefreshBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_loading || RefreshBox.SelectedItem is not ComboBoxItem item) return;
+        var value = (string)item.Tag;
+        await RunDbAsync(() =>
+        {
+            App.Current.Database.SetSetting("refresh_seconds", value);
             App.SignalSettingsChanged();
         });
     }

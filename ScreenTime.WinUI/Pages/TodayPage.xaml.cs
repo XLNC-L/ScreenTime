@@ -32,6 +32,12 @@ public partial class TodayPage : Page
     /// <summary>应用排行绑定的集合：只建一次，刷新时增量同步（见 ListSync）。</summary>
     private readonly System.Collections.ObjectModel.ObservableCollection<AppRankItem> _rankRows = new();
 
+    /// <summary>卡片刷新间隔（秒），来自设置页「刷新间隔」。</summary>
+    private int _refreshSeconds = 30;
+
+    /// <summary>图表刷新间隔：数字的两倍，避免每次刷新都重绘环形图和时间线。</summary>
+    private int _chartSeconds = 30;
+
     // 时间线游标状态：全量重建后缓存范围参数，秒级 tick 只平移游标、不重建时间线
     private Border? _cursor;
     private DateTime _tlRangeStart;
@@ -54,6 +60,9 @@ public partial class TodayPage : Page
 
         Loaded += (_, _) =>
         {
+            // 每次进页面读一次：页面不做导航缓存，改了设置回来就会用新节拍
+            _refreshSeconds = ReadRefreshSeconds();
+            _chartSeconds = Math.Max(_refreshSeconds * 2, 10);
             _dayKey = DateTime.Now.ToString("yyyy-MM-dd");
             SyncAppRankHeight();
             _ = RefreshNumbersAsync();
@@ -96,6 +105,20 @@ public partial class TodayPage : Page
     ///   10 秒 —— 只刷四个时长数字和日期（2 次轻量查询）；
     ///   30 秒 —— 分类占比 / 用途分布 / 应用排行 / 时间线全量重建。
     /// </summary>
+    /// <summary>读设置里的刷新间隔，限定在 5~120 秒：太小会拖库，太大就显得不跟手。</summary>
+    private int ReadRefreshSeconds()
+    {
+        try
+        {
+            var raw = _db.GetSetting("refresh_seconds", "30");
+            return int.TryParse(raw, out var seconds) ? Math.Clamp(seconds, 5, 120) : 30;
+        }
+        catch
+        {
+            return 30;
+        }
+    }
+
     private void OnTick()
     {
         _ticks++;
@@ -112,8 +135,8 @@ public partial class TodayPage : Page
             return;
         }
 
-        if (_ticks % 10 == 0) _ = RefreshNumbersAsync();
-        if (_ticks % 30 == 0) _ = RefreshChartsAsync();
+        if (_ticks % _refreshSeconds == 0) _ = RefreshNumbersAsync();
+        if (_ticks % _chartSeconds == 0) _ = RefreshChartsAsync();
     }
 
     /// <summary>轻量数字刷新：日期 + 四张卡片时长（分钟粒度，秒级变化不展示）。</summary>

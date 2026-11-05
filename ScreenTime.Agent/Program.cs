@@ -31,10 +31,32 @@ internal static class Program
     private static HistoryImportService _historyImport = null!;
     private static TrayIcon? _tray;
     private static volatile bool _exit;
+    /// <summary>托盘提示刷新定时器（间隔取自设置 refresh_seconds）。</summary>
+    private static System.Threading.Timer? _tooltipTimer;
 
     [STAThread]
     private static int Main(string[] args)
     {
+        // 命令行恢复统计：托盘菜单被挡住/想脚本化时用得到。
+        // 必须在单实例互斥之前处理——写设置即可，运行中的 Agent 会在 10 秒内热重载。
+        if (args.Any(a => a.Equals("--resume", StringComparison.OrdinalIgnoreCase)))
+        {
+            try
+            {
+                var db = new Database(CommandLineValue(args, "--db="));
+                db.Init();
+                db.SetSetting("paused_until", "");
+                db.SetSetting("settings_version", DateTime.UtcNow.Ticks.ToString());
+                WriteLog("cli: --resume 已解除暂停");
+                return 0;
+            }
+            catch (Exception ex)
+            {
+                WriteError(ex);
+                return 1;
+            }
+        }
+
         var mutex = new Mutex(true, MutexName, out var createdNew);
         if (!createdNew)
         {
@@ -238,8 +260,6 @@ internal static class Program
         {
             try { _db.SetSetting("agent_heartbeat", Database.ToIso(DateTime.UtcNow)); }
             catch (Exception ex) { WriteError(ex); }
-            // 悬停提示跟着心跳走：30 秒一次，成本与心跳同级
-            UpdateTrayTooltip();
         }, null, TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(30));
 
         // 明细保留：每天最多跑一次，超过保留期的明细折叠成日汇总后再删除
@@ -270,6 +290,10 @@ internal static class Program
         _tray.PauseRequested += TrayPause;
         UpdateTrayTooltip();
 
+        // 托盘提示按设置里的「刷新间隔」更新，和今日页一致；心跳仍固定 30 秒（那是健康标记）
+        _tooltipTimer = new System.Threading.Timer(_ => UpdateTrayTooltip(),
+            null, TimeSpan.FromSeconds(2), RefreshPeriod());
+
         WriteLog($"agent started pid={Environment.ProcessId}");
 
         // 诊断：--tray-selftest 时 5 秒后自投递一次左键回调，用于排查托盘点击链路
@@ -288,6 +312,7 @@ internal static class Program
         try { pruneTimer.Dispose(); } catch { }
         try { reminderTimer.Dispose(); } catch { }
         try { _historyImport.Dispose(); } catch { }
+        try { _tooltipTimer?.Dispose(); } catch { }
         try { _watcher.Dispose(); } catch { }
         try { _tray.Dispose(); } catch { }
         WriteLog("agent stopped");
@@ -307,6 +332,10 @@ internal static class Program
                 _watcher.ReloadSettings();
                 // 设置变了让回填尽快跑一轮（打开「历史回填」开关后不用等半小时）
                 _historyImport?.Start();
+                // 刷新间隔可能改了：重排定时器（Change 会立刻按新周期重算）
+                var period = RefreshPeriod();
+                _tooltipTimer?.Change(TimeSpan.Zero, period);
+                WriteLog($"tooltip: 刷新间隔 -> {period.TotalSeconds:0} 秒");
             }
         }
         catch (Exception ex) { WriteError(ex); }
@@ -466,6 +495,21 @@ internal static class Program
             UpdateTrayTooltip();
         }
         catch (Exception ex) { WriteError(ex); }
+    }
+
+    /// <summary>托盘提示的刷新周期，限定 5~120 秒（与今日页同一份设置）。</summary>
+    private static TimeSpan RefreshPeriod()
+    {
+        try
+        {
+            var raw = _db.GetSetting("refresh_seconds", "30");
+            var seconds = int.TryParse(raw, out var v) ? Math.Clamp(v, 5, 120) : 30;
+            return TimeSpan.FromSeconds(seconds);
+        }
+        catch
+        {
+            return TimeSpan.FromSeconds(30);
+        }
     }
 
     /// <summary>当前有效的暂停截止时间；已过期或未设置返回 null。</summary>

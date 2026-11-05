@@ -49,6 +49,10 @@ dotnet test ScreenTime.Tests\ScreenTime.Tests.csproj -c Release
    否则常驻进程的日志会无限增长。
 8. **部署要按发布口径**：`dotnet publish -c Release -r win-x64`（项目开了 `PublishReadyToRun`），
    `dotnet build` 出来的不是 R2R；换版本号时 `ScreenTime.{WinUI,Agent,Collect,Core}.dll` 必须整套替换。
+9. **动了 XAML 就必须带上 `resources.pri`**：xbf 编译产物在里面，只换 dll 会让
+   `SettingsPage.Connect` 这类生成的绑定代码取到错位的控件，抛 `InvalidCastException`，
+   表现是「点导航没反应、页面切不过去」。完整清单：`ScreenTime.exe`、`ScreenTime.dll`、
+   `resources.pri`、`ScreenTime.Agent.exe/.dll`、`ScreenTime.Collect.dll`、`ScreenTime.Core.dll`。
 7. **安装器界面文案靠 `installer\languages\ChineseSimplified.isl`**（Inno 官方包不含中文）。
    不要改回 `compiler:Default.isl`，那会让向导变回英文。
 8. **不要删 `Microsoft.UI.Xaml.Phone.dll`**：名字像手机专用，实际是 WinUI 启动期硬依赖，

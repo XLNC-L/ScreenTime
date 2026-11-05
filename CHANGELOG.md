@@ -4,6 +4,38 @@
 
 ---
 
+## v1.4.1（2026-11-05）设置页放不进来的版本包、托盘右键菜单改观、刷新间隔可调
+
+### 修复：设置页点不动
+
+- **根因是部署漏了 `resources.pri`**：XAML 编译产物（xbf）在里面，只换 `ScreenTime.dll`
+  会让 `SettingsPage.Connect` 按新的控件表去取旧的界面元素，抛
+  `InvalidCastException: Unable to cast 'IInspectable' to 'ComboBox'`，
+  页面构造失败 → 导航停在上一页。补上 `resources.pri` 即恢复。
+- AGENTS.md 的部署清单已改成：`ScreenTime.exe`、`ScreenTime.dll`、**`resources.pri`**、
+  `ScreenTime.Agent.exe/.dll`、`ScreenTime.Collect.dll`、`ScreenTime.Core.dll`，一个都不能少。
+
+### 托盘右键菜单换成 WinUI 观感
+
+- Win32 的 `TrackPopupMenu` 在 Win11 上始终按系统浅色经典样式渲染：补 comctl32 v6 清单、
+  进程级 `SetPreferredAppMode(ForceDark)`、给宿主窗口挂 `DarkMode_Explorer` 都试过，无效。
+- 改成自绘弹窗（`TrayMenuWindow`）：深色底 `#2B2B2B`、16px 圆角、34px 行高、
+  14px Segoe UI Variable、悬停整行高亮、鼠标移出即收起、点空白处自动关闭。
+- 原生菜单保留作兜底：自绘初始化失败时自动退回，功能不受影响。
+
+### 刷新间隔可以调（同步托盘和今日页）
+
+- 设置 → 常规 → 「刷新间隔」：5 / 10 / 15 / 30 / 60 秒，默认 30。
+- 今日页：卡片数字按该间隔刷新，图表按两倍间隔（避免频繁重绘）。
+- 托盘：悬停提示按同一间隔更新，改完设置 10 秒内生效（日志会写 `刷新间隔 -> N 秒`）。
+
+### 其它
+
+- Agent 新增 `--resume` 命令行参数：清除暂停状态并触发采集器热重载（脚本化/应急用）。
+- 「关于」页版本号改为读程序集（v1.4.0 里已做，这里不再手写版本）。
+
+---
+
 ## v1.4.0（2026-11-05）托盘图标自愈、悬停看今日时长、可暂停统计
 
 ### 托盘图标不再「莫名消失」
