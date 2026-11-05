@@ -81,8 +81,6 @@ public sealed class TrayIcon : IDisposable
     private Timer? _watchdog;
     private bool _iconPresent;
     private bool _disposed;
-    /// <summary>上次登记图标时 shell 托盘窗口的句柄；Explorer 重启后这个句柄一定会变。</summary>
-    private IntPtr _shellTrayHwnd;
 
     public event Action? OpenRequested;
     public event Action? ExitRequested;
@@ -123,11 +121,11 @@ public sealed class TrayIcon : IDisposable
 
         LogRect();
 
-        _shellTrayHwnd = FindWindowW("Shell_TrayWnd", null);
-
-        // 看门狗：3 秒后开始，之后每 5 秒只是给自己的窗口 PostMessage，
-        // 真正的 shell 调用在 WndProc 里做（见类注释）
-        _watchdog = new Timer(_ => PostWatchdogTick(), null, TimeSpan.FromSeconds(3), TimeSpan.FromSeconds(5));
+        // 兜底重试：只在「确认当前没有图标」时才去登记（AddIcon 的前提由 EnsureIcon 把关）。
+        // 周期 2 秒只是给自己的窗口 PostMessage，shell 调用发生在消息线程；
+        // 关键是**图标还在时绝不去碰 shell**——Explorer 正在被拆的那一瞬间调用
+        // Shell_NotifyIcon 会让整个进程静默退出（实测约 1/5 概率）。
+        _watchdog = new Timer(_ => PostWatchdogTick(), null, TimeSpan.FromSeconds(2), TimeSpan.FromSeconds(2));
     }
 
     /// <summary>按当前状态组装 NOTIFYICONDATA（必须用完整结构，cbSize 少了某些系统会拒绝登记）。</summary>
@@ -190,24 +188,17 @@ public sealed class TrayIcon : IDisposable
     }
 
     /// <summary>
-    /// 看门狗（消息线程侧）：外壳托盘窗口的句柄变了就说明 Explorer 重启过，重新登记图标。
-    /// 不用 NIM_MODIFY 探测——外壳正在被拆的那一瞬间调用它会让整个进程静默崩溃。
+    /// 兜底：只在确认「当前没有图标」时才补登记。图标还在就什么都不做——
+    /// 这样 Explorer 被拆的那一瞬间不会有任何 shell 调用，进程不会被带走。
+    /// 外壳还没起来时（Shell_TrayWnd 不存在）先跳过，交给下一个节拍。
     /// </summary>
-    private void CheckShellTray(string reason)
+    private void EnsureIcon(string reason)
     {
-        if (_disposed || _hWnd == IntPtr.Zero) return;
+        if (_disposed || _hWnd == IntPtr.Zero || _iconPresent) return;
 
-        var tray = FindWindowW("Shell_TrayWnd", null);
-        if (tray == IntPtr.Zero) return;          // 外壳还没起来，下一个节拍再看
+        if (FindWindowW("Shell_TrayWnd", null) == IntPtr.Zero) return;
 
-        if (tray == _shellTrayHwnd && _iconPresent) return;
-
-        if (_shellTrayHwnd != IntPtr.Zero && tray != _shellTrayHwnd)
-            Log?.Invoke($"tray: 检测到外壳重启（托盘窗口 0x{_shellTrayHwnd.ToInt64():X} -> 0x{tray.ToInt64():X}），重新登记图标");
-        else if (!_iconPresent)
-            Log?.Invoke($"tray: 图标未登记，补登记 ({reason})");
-
-        _shellTrayHwnd = tray;
+        Log?.Invoke($"tray: 图标缺失，重新登记 ({reason})");
         _iconPresentLogged = false;
         AddIcon(reason);
     }
@@ -216,8 +207,8 @@ public sealed class TrayIcon : IDisposable
     private void OnTaskbarCreated()
     {
         Log?.Invoke("tray: 收到 TaskbarCreated（外壳重启），重新登记图标");
-        _shellTrayHwnd = IntPtr.Zero;      // 强制走一次重新登记
-        CheckShellTray("taskbar-created");
+        _iconPresent = false;              // 外壳已清空所有托盘图标，必须重登
+        EnsureIcon("taskbar-created");
     }
 
     /// <summary>手动重载（右键菜单用）：先删再登记。</summary>
@@ -377,7 +368,7 @@ public sealed class TrayIcon : IDisposable
         // 看门狗节拍：由线程池投递过来，真正的 shell 调用在这里执行
         if (msg == WM_WATCHDOG)
         {
-            _current?.CheckShellTray("watchdog");
+            _current?.EnsureIcon("watchdog");
             return IntPtr.Zero;
         }
 

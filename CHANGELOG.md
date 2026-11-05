@@ -14,9 +14,11 @@
      只有响应它广播的 `TaskbarCreated` 消息重新登记才能恢复。
 - **修法**（三条防线）：
   - 监听 `RegisterWindowMessage("TaskbarCreated")`，收到后立即重新登记；
-  - 看门狗每 15 秒用 `NIM_MODIFY` 探测图标是否还在，返回失败即自动补登记，
-    首次探测在启动 3 秒后（覆盖开机时 Explorer 起得比 Agent 晚的情况）；
+  - 兜底重试每 2 秒检查一次，**只在确认当前没有图标时才调用 shell**；图标在多就什么都不做——
+    Explorer 正在被拆的那一瞬间只要碰 `Shell_NotifyIcon`，进程有约 1/5 概率静默退出；
   - 登记失败时立即重试一次，并把 `err` 码写进 `agent.log`，不再静默失败。
+- **看门狗只在线程池侧 PostMessage**，所有 shell 调用都回到消息线程执行（同一线程拥有窗口）；
+  压测 10 轮 Explorer 重启，进程零退出、图标每轮都自动恢复。
 - **顺带修掉**：`NOTIFYICONDATA` 用完整结构（976 字节），原来只声明到 `szTip`
   （`cbSize=296`）是非标准尺寸，部分环境会被 shell 拒收。
 - **日志噪音**：鼠标划过图标产生的 `WM_MOUSEMOVE` 不再逐条写 `agent.log`
