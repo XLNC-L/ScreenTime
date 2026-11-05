@@ -23,7 +23,13 @@ internal sealed class TrayMenuWindow : IDisposable
 
     private const uint WS_POPUP = 0x80000000;
     private const uint WS_EX_TOOLWINDOW = 0x00000080;
+    /// <summary>托盘溢出面板是 topmost 的，菜单不加这个就会被压在它下面。</summary>
+    private const uint WS_EX_TOPMOST = 0x00000008;
     private const uint CS_DROPSHADOW = 0x00020000;
+    private const uint SWP_NOSIZE = 0x0001;
+    private const uint SWP_NOMOVE = 0x0002;
+    private const uint SWP_NOACTIVATE = 0x0010;
+    private static readonly IntPtr HwndTopmost = (IntPtr)(-1);
 
     private const uint WM_DESTROY = 0x0002;
     private const uint WM_ACTIVATE = 0x0006;
@@ -126,7 +132,7 @@ internal sealed class TrayMenuWindow : IDisposable
         if (y + _height > work.Bottom) y = work.Bottom - _height;
         if (y < work.Top) y = work.Top;
 
-        _hWnd = CreateWindowExW(WS_EX_TOOLWINDOW, WindowClassName, "ScreenTime",
+        _hWnd = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_TOPMOST, WindowClassName, "ScreenTime",
             WS_POPUP, x, y, _width, _height, IntPtr.Zero, IntPtr.Zero, hInstance, IntPtr.Zero);
         if (_hWnd == IntPtr.Zero)
         {
@@ -137,6 +143,8 @@ internal sealed class TrayMenuWindow : IDisposable
         OpenWindows[_hWnd] = this;
         SetWindowRgn(_hWnd, CreateRoundRectRgn(0, 0, _width + 1, _height + 1, CornerDiameter, CornerDiameter), true);
         ShowWindow(_hWnd, 5 /*SW_SHOW*/);
+        // 再强制提一次 topmost：只靠扩展样式，遇到已在前台的托盘面板仍可能被压住
+        SetWindowPos(_hWnd, HwndTopmost, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
         SetForegroundWindow(_hWnd);
         InvalidateRect(_hWnd, IntPtr.Zero, true);
         return true;
@@ -561,6 +569,9 @@ internal sealed class TrayMenuWindow : IDisposable
 
     [DllImport("user32.dll")]
     private static extern bool SetForegroundWindow(IntPtr hWnd);
+
+    [DllImport("user32.dll")]
+    private static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int X, int Y, int cx, int cy, uint uFlags);
 
     [DllImport("user32.dll")]
     private static extern IntPtr GetForegroundWindow();
