@@ -25,6 +25,7 @@ build.cmd                                     :: 编译 UI + Agent 并 publish �
 powershell -File tools\publish.ps1 -Deploy     :: 自包含发布并镜像到 D:\ScreenTime
 dotnet build ScreenTime.sln -c Release        :: 只编译
 dotnet test ScreenTime.Tests\ScreenTime.Tests.csproj -c Release
+dotnet run --project tools\menu-probe         :: 托盘菜单回归（弹出/关闭/不套娃），改菜单必跑
 "%LOCALAPPDATA%\Programs\Inno Setup 6\ISCC.exe" /DAppVersion=x.y.z /DSelfContained=1 installer\ScreenTime.iss
 ```
 
@@ -59,6 +60,13 @@ dotnet test ScreenTime.Tests\ScreenTime.Tests.csproj -c Release
    删掉后界面直接起不来（已实测）。发布精简只允许删 pdb、DiaSymReader、多余语言目录。
 9. 安装器新增了「仅为我 / 为所有用户」选择（`PrivilegesRequiredOverridesAllowed=dialog`），
    静默安装必须带 `/CURRENTUSER` 或 `/ALLUSERS`，否则会卡在这个对话框。
+10. **Win32 窗口只能在创建它的线程销毁**。定时器/线程池里看到窗口要关，一律
+    `PostMessage(WM_APP_CLOSE)` 回消息线程（见 `TrayMenuWindow.RequestClose`），
+    直接跨线程 `DestroyWindow` 会静默失败，窗口留在屏幕上且是 topmost，谁也关不掉——
+    v1.4.1 的「菜单套娃」就是这么来的。
+11. **弹窗类菜单不要指望 `SetForegroundWindow`**：托盘进程在后台，系统会拒绝，
+    拿不到 `WM_ACTIVATE` 就没有「点外面自动关」。用 `WH_MOUSE_LL` 低级鼠标钩子判点位
+    （见 `TrayMenuWindow.InstallMouseHook`），窗口清零后摘钩。
 
 ## 4. 收尾动作（每次会话结束前）
 

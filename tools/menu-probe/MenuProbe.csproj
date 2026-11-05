@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- 托盘自绘菜单探针：直接编译 Agent 里那份 TrayMenuWindow.cs，避免复制代码导致跑偏。
+       用法见同目录 README.md。不加入解决方案，不影响 build.cmd / publish.ps1。 -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <Platforms>x64</Platforms>
+    <AssemblyName>MenuProbe</AssemblyName>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <RestorePackagesWithLockFile>false</RestorePackagesWithLockFile>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="Program.cs" />
+    <Compile Include="..\..\ScreenTime.Agent\Native\TrayMenuWindow.cs" Link="TrayMenuWindow.cs" />
+  </ItemGroup>
+
+</Project>

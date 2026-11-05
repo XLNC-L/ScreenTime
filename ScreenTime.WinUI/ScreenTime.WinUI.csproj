@@ -23,7 +23,7 @@
     <ApplicationIcon>Assets\app.ico</ApplicationIcon>
     <!-- DPI 感知清单：缺了它进程是 DPI Unaware，第三方输入法的候选窗会定位错乱 -->
     <ApplicationManifest>app.manifest</ApplicationManifest>
-    <Version>1.4.1</Version>
+    <Version>1.4.2</Version>
     <PublishReadyToRun>true</PublishReadyToRun>
     <PublishReadyToRunShowWarnings>true</PublishReadyToRunShowWarnings>
   </PropertyGroup>
