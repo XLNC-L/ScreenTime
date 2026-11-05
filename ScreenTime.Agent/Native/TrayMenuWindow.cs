@@ -3,28 +3,30 @@ using System.Runtime.InteropServices;
 namespace ScreenTime.Agent.Native;
 
 /// <summary>
-/// 自绘托盘菜单。
+/// 自绘托盘菜单（支持二级子菜单）。
 ///
 /// 为什么不用 TrackPopupMenu：Win32 原生菜单在 Win11 上始终按系统「浅色 + 经典」渲染，
-/// 试过补 comctl32 v6 清单、进程级 <c>SetPreferredAppMode(ForceDark)</c>、给宿主窗口挂
-/// DarkMode_Explorer 主题，菜单照样是白底方角——它压根不吃 WinUI 的主题。
-/// 而真用 WinUI 的 MenuFlyout 又必须先有一个 WinUI 窗口，与「采集进程常驻、界面关掉即退出」
-/// 的架构冲突。折中办法就是这个：无边框弹窗自己画，视觉上和 WinUI MenuFlyout 对齐
-/// （深色底、8px 圆角、34px 行高、悬停高亮、悬停离开即收起）。
+/// 补 comctl32 v6 清单、进程级 <c>SetPreferredAppMode(ForceDark)</c>、给宿主窗口挂
+/// DarkMode_Explorer 主题都试过，一律无效——它不吃 WinUI 的主题。真用 MenuFlyout 又得
+/// 先有 WinUI 窗口，与「采集进程常驻、界面关掉即退出」冲突，所以在托盘进程里自己画。
+///
+/// 窗口必须带 <c>WS_EX_TOOLWINDOW</c>(0x80)：无边框弹窗如果不带这个扩展样式，
+/// Windows 会把它当成普通应用窗口，任务栏就会多出一个条目（之前 w 参数误写成 0x8，
+/// 那是 WS_EX_TOPMOST，所以任务栏一直多一个 ScreenTime）。
 /// </summary>
 internal sealed class TrayMenuWindow : IDisposable
 {
-    /// <summary>一项菜单：Id 为 0 表示分隔线。</summary>
-    public readonly record struct Entry(string Text, int Id);
+    /// <summary>一项菜单。<c>Id</c> 为 0 表示分隔线，<c>Children</c> 非空表示带子菜单。</summary>
+    public readonly record struct Entry(string Text, int Id, IReadOnlyList<Entry>? Children = null);
 
-    private static readonly string WindowClassName = "ScreenTimeAgentTrayMenu_" + Guid.NewGuid().ToString("N");
+    private const string WindowClassName = "ScreenTimeAgentTrayMenu_" + "v2";
 
     private const uint WS_POPUP = 0x80000000;
+    private const uint WS_EX_TOOLWINDOW = 0x00000080;
     private const uint CS_DROPSHADOW = 0x00020000;
 
     private const uint WM_DESTROY = 0x0002;
     private const uint WM_ACTIVATE = 0x0006;
-    private const uint WM_KILLFOCUS = 0x0008;
     private const uint WM_PAINT = 0x000F;
     private const uint WM_KEYDOWN = 0x0100;
     private const uint WM_MOUSEMOVE = 0x0200;
@@ -37,14 +39,17 @@ internal sealed class TrayMenuWindow : IDisposable
     private const int SeparatorHeight = 9;
     private const int PaddingY = 6;
     private const int PaddingX = 14;
-    private const int MinWidth = 200;
-    private const int CornerRadius = 16;   // 传给 CreateRoundRectRgn 的是直径
+    private const int ArrowWidth = 22;
+    private const int MinWidth = 176;
+    private const int CornerDiameter = 16;
 
     private const uint VK_ESCAPE = 0x1B;
     private const uint TME_LEAVE = 0x00000002;
 
-    private static WndProcDelegate? _procHolder;     // 防 GC
-    private static TrayMenuWindow? _current;
+    private static WndProcDelegate? _procHolder;
+    /// <summary>按窗口句柄路由消息：父菜单和子菜单同时存在，不能只记「最后一个」。</summary>
+    private static readonly Dictionary<IntPtr, TrayMenuWindow> OpenWindows = new();
+    private static TrayMenuSession? _session;
 
     private static readonly IntPtr BgColor = Rgb(0x2B, 0x2B, 0x2B);
     private static readonly IntPtr HoverColor = Rgb(0x3A, 0x3A, 0x3A);
@@ -52,21 +57,19 @@ internal sealed class TrayMenuWindow : IDisposable
     private static readonly IntPtr SeparatorColor = Rgb(0x3F, 0x3F, 0x3F);
 
     private readonly List<Entry> _entries;
-    private readonly Action<int> _onPick;
     private readonly IntPtr _hFont;
     private readonly int _width;
     private readonly int _height;
 
     private IntPtr _hWnd;
     private int _hoverIndex = -1;
+    private int _openSubIndex = -1;
     private bool _trackingLeave;
-    private bool _picked;
+    private bool _closing;
 
-    private TrayMenuWindow(List<Entry> entries, Action<int> onPick)
+    private TrayMenuWindow(List<Entry> entries)
     {
         _entries = entries;
-        _onPick = onPick;
-
         _hFont = CreateFontW(-14, 0, 0, 0, 400, 0, 0, 0, 0, 0, 0, 0, 0, "Segoe UI Variable Text");
         if (_hFont == IntPtr.Zero) _hFont = CreateFontW(-14, 0, 0, 0, 400, 0, 0, 0, 0, 0, 0, 0, 0, "Segoe UI");
 
@@ -76,19 +79,22 @@ internal sealed class TrayMenuWindow : IDisposable
         {
             if (entry.Id == 0) { height += SeparatorHeight; continue; }
             height += ItemHeight;
-            textWidth = Math.Max(textWidth, MeasureText(entry.Text));
+            var w = MeasureText(entry.Text) + (entry.Children is { Count: > 0 } ? ArrowWidth : 0);
+            textWidth = Math.Max(textWidth, w);
         }
         _width = Math.Max(MinWidth, textWidth + PaddingX * 2);
         _height = height;
     }
 
-    /// <summary>在屏幕坐标处弹出菜单（左上角对齐鼠标，超出工作区会往上翻）。返回是否成功弹出。</summary>
+    /// <summary>弹出菜单根节点。</summary>
     public static bool Show(int screenX, int screenY, IReadOnlyList<Entry> entries, Action<int> onPick, Action<string>? log)
     {
         try
         {
-            var menu = new TrayMenuWindow(entries.ToList(), onPick);
-            return menu.ShowAt(screenX, screenY, log);
+            _session?.CloseAll();
+            var session = new TrayMenuSession(onPick, log);
+            _session = session;
+            return session.OpenRoot(entries, screenX, screenY);
         }
         catch (Exception ex)
         {
@@ -97,7 +103,7 @@ internal sealed class TrayMenuWindow : IDisposable
         }
     }
 
-    private bool ShowAt(int screenX, int screenY, Action<string>? log)
+    private bool ShowAt(int screenX, int screenY, bool above, Action<string>? log)
     {
         var hInstance = GetModuleHandleW(null);
         var wc = new WNDCLASSEX
@@ -111,16 +117,16 @@ internal sealed class TrayMenuWindow : IDisposable
         };
         RegisterClassExW(ref wc);
 
-        // 默认往上弹：托盘在右下角，菜单放鼠标上方更自然；超出屏幕再往下翻
-        var y = screenY - _height;
-        if (y < 0) y = screenY;
+        var y = above ? screenY - _height : screenY;
         var x = screenX - _width / 2;
+
         var work = SystemParameters.WorkArea;
         if (x + _width > work.Right) x = work.Right - _width;
         if (x < work.Left) x = work.Left;
         if (y + _height > work.Bottom) y = work.Bottom - _height;
+        if (y < work.Top) y = work.Top;
 
-        _hWnd = CreateWindowExW(0x00000008 /*WS_EX_TOOLWINDOW*/, WindowClassName, "ScreenTime",
+        _hWnd = CreateWindowExW(WS_EX_TOOLWINDOW, WindowClassName, "ScreenTime",
             WS_POPUP, x, y, _width, _height, IntPtr.Zero, IntPtr.Zero, hInstance, IntPtr.Zero);
         if (_hWnd == IntPtr.Zero)
         {
@@ -128,18 +134,17 @@ internal sealed class TrayMenuWindow : IDisposable
             return false;
         }
 
-        _current = this;
-        SetWindowRgn(_hWnd, CreateRoundRectRgn(0, 0, _width + 1, _height + 1, CornerRadius, CornerRadius), true);
+        OpenWindows[_hWnd] = this;
+        SetWindowRgn(_hWnd, CreateRoundRectRgn(0, 0, _width + 1, _height + 1, CornerDiameter, CornerDiameter), true);
         ShowWindow(_hWnd, 5 /*SW_SHOW*/);
         SetForegroundWindow(_hWnd);
         InvalidateRect(_hWnd, IntPtr.Zero, true);
-        log?.Invoke($"menu: 自绘菜单弹出 ({_width}x{_height}) at ({x},{y})");
         return true;
     }
 
     private int MeasureText(string text)
     {
-        var hdc = GetDC(_hWnd == IntPtr.Zero ? IntPtr.Zero : _hWnd);
+        var hdc = GetDC(_hWnd);
         var prev = SelectObject(hdc, _hFont);
         GetTextExtentPoint32W(hdc, text, text.Length, out var size);
         SelectObject(hdc, prev);
@@ -157,6 +162,14 @@ internal sealed class TrayMenuWindow : IDisposable
             y += h;
         }
         return -1;
+    }
+
+    private int ItemTop(int index)
+    {
+        var y = PaddingY;
+        for (var i = 0; i < index; i++)
+            y += _entries[i].Id == 0 ? SeparatorHeight : ItemHeight;
+        return y;
     }
 
     private void Paint(IntPtr hdc)
@@ -183,7 +196,7 @@ internal sealed class TrayMenuWindow : IDisposable
                 continue;
             }
 
-            if (i == _hoverIndex)
+            if (i == _hoverIndex || i == _openSubIndex)
             {
                 var hover = new RECT { Left = 4, Top = y, Right = _width - 4, Bottom = y + ItemHeight };
                 var brush = CreateSolidBrush(HoverColor);
@@ -192,9 +205,21 @@ internal sealed class TrayMenuWindow : IDisposable
             }
 
             SetTextColor(hdc, TextColor);
-            var textRect = new RECT { Left = PaddingX, Top = y, Right = _width - PaddingX, Bottom = y + ItemHeight };
-            DrawTextW(hdc, entry.Text, -1, ref textRect,
-                0x00000024 /*DT_SINGLELINE*/ | 0x00000004 /*DT_VCENTER*/ | 0x00000000 /*DT_LEFT*/);
+            var textRect = new RECT
+            {
+                Left = PaddingX,
+                Top = y,
+                Right = _width - PaddingX - (entry.Children is { Count: > 0 } ? ArrowWidth : 0),
+                Bottom = y + ItemHeight
+            };
+            DrawTextW(hdc, entry.Text, -1, ref textRect, 0x00000024 /*DT_SINGLELINE|DT_VCENTER*/);
+
+            if (entry.Children is { Count: > 0 })
+            {
+                var arrowRect = new RECT { Left = _width - PaddingX - ArrowWidth, Top = y, Right = _width - PaddingX, Bottom = y + ItemHeight };
+                DrawTextW(hdc, "›", -1, ref arrowRect, 0x00000026 /*DT_SINGLELINE|DT_VCENTER|DT_RIGHT*/);
+            }
+
             y += ItemHeight;
         }
 
@@ -203,8 +228,8 @@ internal sealed class TrayMenuWindow : IDisposable
 
     private static IntPtr WndProc(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam)
     {
-        var self = _current;
-        if (self is null || self._hWnd != hWnd) return DefWindowProcW(hWnd, msg, wParam, lParam);
+        var self = OpenWindows.TryGetValue(hWnd, out var window) ? window : null;
+        if (self is null) return DefWindowProcW(hWnd, msg, wParam, lParam);
 
         switch (msg)
         {
@@ -232,13 +257,24 @@ internal sealed class TrayMenuWindow : IDisposable
                     TrackMouseEvent(ref tme);
                     self._trackingLeave = true;
                 }
+                _session?.NotifyEntered(self);
 
-                var y = (short)((long)lParam & 0xFFFF);
+                var y = (short)(((long)lParam >> 16) & 0xFFFF);   // 高 16 位才是 Y，低位是 X
                 var index = self.HitTest(y);
                 if (index != self._hoverIndex)
                 {
                     self._hoverIndex = index;
+                    // 从带子菜单的行移开到别的行 → 收起子菜单
+                    if (index != self._openSubIndex) _session?.CloseSubsOf(self, ref self._openSubIndex);
                     InvalidateRect(hWnd, IntPtr.Zero, false);
+                }
+
+                // 悬停到带箭头那行就展开子菜单（和系统菜单一致，不需要点击）
+                if (index >= 0 && self._entries[index].Children is { Count: > 0 } children && index != self._openSubIndex)
+                {
+                    self._openSubIndex = index;
+                    InvalidateRect(hWnd, IntPtr.Zero, false);
+                    _session?.OpenSub(self, children, self._width - 4, self.ItemTop(index) - PaddingY, self._hWnd);
                 }
                 return IntPtr.Zero;
             }
@@ -247,63 +283,192 @@ internal sealed class TrayMenuWindow : IDisposable
                 self._trackingLeave = false;
                 self._hoverIndex = -1;
                 InvalidateRect(hWnd, IntPtr.Zero, false);
+                _session?.NotifyLeft(self);
                 return IntPtr.Zero;
 
             case WM_LBUTTONUP:
             {
-                var y = (short)((long)lParam & 0xFFFF);
+                var y = (short)(((long)lParam >> 16) & 0xFFFF);   // 高 16 位才是 Y，低位是 X
                 var index = self.HitTest(y);
                 if (index >= 0)
                 {
-                    self._picked = true;
-                    var id = self._entries[index].Id;
-                    self.Close();
-                    self._onPick(id);
+                    var entry = self._entries[index];
+                    if (entry.Children is { Count: > 0 }) return IntPtr.Zero;   // 父项点击不动作，交给悬停
+                    _session?.Pick(entry.Id);
                 }
                 return IntPtr.Zero;
             }
 
             case WM_RBUTTONUP:
-                self.Close();
+                _session?.CloseAll();
                 return IntPtr.Zero;
 
             case WM_KEYDOWN:
-                if ((uint)wParam == VK_ESCAPE) self.Close();
+                if ((uint)wParam == VK_ESCAPE) _session?.CloseAll();
                 return IntPtr.Zero;
 
             case WM_ACTIVATE:
-                // 点到别处（菜单失去激活）就收起，和系统菜单一致
-                if (((long)wParam & 0xFFFF) == 0) self.Close();
-                return IntPtr.Zero;
-
-            case WM_KILLFOCUS:
-                self.Close();
+                if (((long)wParam & 0xFFFF) == 0) _session?.ScheduleForegroundCheck();
                 return IntPtr.Zero;
         }
 
         return DefWindowProcW(hWnd, msg, wParam, lParam);
     }
 
-    private void Close()
+    private void DestroyNow()
     {
-        if (_hWnd == IntPtr.Zero) return;
+        if (_closing) return;
+        _closing = true;
         var hwnd = _hWnd;
         _hWnd = IntPtr.Zero;
-        ReleaseCapture();
-        DestroyWindow(hwnd);
-        if (ReferenceEquals(_current, this)) _current = null;
-        if (!_picked) _onPick(int.MinValue);   // 通知调用方「只是关掉了」
+        if (hwnd != IntPtr.Zero) OpenWindows.Remove(hwnd);
+        if (hwnd != IntPtr.Zero) DestroyWindow(hwnd);
+        if (_hFont != IntPtr.Zero) DeleteObject(_hFont);
     }
 
-    public void Dispose()
-    {
-        if (_hWnd != IntPtr.Zero) DestroyWindow(_hWnd);
-        _hWnd = IntPtr.Zero;
-        if (_hFont != IntPtr.Zero) DeleteObject(_hFont);
-        if (ReferenceEquals(_current, this)) _current = null;
-    }
+    public void Dispose() => DestroyNow();
 
     private static IntPtr Rgb(byte r, byte g, byte b) => (IntPtr)(r | (g << 8) | (b << 16));
+
+    // ---------- 会话：管根菜单 + 子菜单的打开/关闭 ----------
+
+    private sealed class TrayMenuSession
+    {
+        private readonly Action<int> _onPick;
+        private readonly Action<string>? _log;
+        private readonly List<TrayMenuWindow> _windows = new();
+        private Timer? _leaveTimer;
+        private Timer? _foregroundTimer;
+
+        public TrayMenuSession(Action<int> onPick, Action<string>? log)
+        {
+            _onPick = onPick;
+            _log = log;
+        }
+
+        public bool OpenRoot(IReadOnlyList<Entry> entries, int x, int y)
+        {
+            var window = new TrayMenuWindow(entries.ToList());
+            if (!window.ShowAt(x, y, above: true, _log))
+            {
+                window.Dispose();
+                return false;
+            }
+            _windows.Add(window);
+            _log?.Invoke($"menu: 自绘菜单弹出 ({window._width}x{window._height})");
+            return true;
+        }
+
+        /// <summary>在父窗口右侧展开子菜单。</summary>
+        public void OpenSub(TrayMenuWindow parent, IReadOnlyList<Entry> entries, int clientX, int clientY, IntPtr parentHwnd)
+        {
+            var index = _windows.IndexOf(parent);
+            if (index < 0) return;
+            CloseFrom(index + 1);
+
+            GetWindowRect(parentHwnd, out var parentRect);
+            var sub = new TrayMenuWindow(entries.ToList());
+            var x = parentRect.Left + clientX;
+            var y = parentRect.Top + clientY;
+
+            // 右边放不下就翻到父菜单左侧
+            var work = SystemParameters.WorkArea;
+            if (x + sub._width > work.Right) x = parentRect.Left - sub._width + 4;
+
+            if (!sub.ShowAt(x, y, above: false, _log))
+            {
+                sub.Dispose();
+                return;
+            }
+            _windows.Add(sub);
+        }
+
+        public void CloseSubsOf(TrayMenuWindow owner, ref int openIndex)
+        {
+            var index = _windows.IndexOf(owner);
+            if (index < 0) return;
+            CloseFrom(index + 1);
+            openIndex = -1;
+        }
+
+        public void NotifyEntered(TrayMenuWindow window)
+        {
+            _leaveTimer?.Dispose();
+            _leaveTimer = null;
+        }
+
+
+        /// <summary>鼠标离开某个窗口：给 250ms 缓冲，让指针有机会移进子菜单。</summary>
+        public void NotifyLeft(TrayMenuWindow window)
+        {
+            _leaveTimer?.Dispose();
+            _leaveTimer = new Timer(_ =>
+            {
+                try
+                {
+                    if (CursorInAnyWindow()) return;
+                    CloseAll();
+                }
+                catch { }
+            }, null, 250, Timeout.Infinite);
+        }
+
+        public void ScheduleForegroundCheck()
+        {
+            _foregroundTimer?.Dispose();
+            // 展开子菜单会抢一次前台，这里稍微等一拍再判断，避免自己把自己关掉
+            _foregroundTimer = new Timer(_ =>
+            {
+                try
+                {
+                    var fg = GetForegroundWindow();
+                    foreach (var w in _windows)
+                        if (w._hWnd == fg) return;
+                    CloseAll();
+                }
+                catch { }
+            }, null, 120, Timeout.Infinite);
+        }
+
+        private bool CursorInAnyWindow()
+        {
+            GetCursorPos(out var pt);
+            foreach (var w in _windows)
+            {
+                if (w._hWnd == IntPtr.Zero) continue;
+                GetWindowRect(w._hWnd, out var rect);
+                if (pt.X >= rect.Left && pt.X < rect.Right && pt.Y >= rect.Top && pt.Y < rect.Bottom)
+                    return true;
+            }
+            return false;
+        }
+
+        public void Pick(int id)
+        {
+            CloseAll();
+            if (id > 0) _onPick(id);
+        }
+
+        public void CloseAll()
+        {
+            _leaveTimer?.Dispose();
+            _leaveTimer = null;
+            _foregroundTimer?.Dispose();
+            _foregroundTimer = null;
+            for (var i = _windows.Count - 1; i >= 0; i--) _windows[i].Dispose();
+            _windows.Clear();
+            if (ReferenceEquals(_session, this)) _session = null;
+        }
+
+        private void CloseFrom(int index)
+        {
+            for (var i = _windows.Count - 1; i >= index; i--)
+            {
+                _windows[i].Dispose();
+                _windows.RemoveAt(i);
+            }
+        }
+    }
 
     // ---------- Win32 ----------
 
@@ -330,6 +495,12 @@ internal sealed class TrayMenuWindow : IDisposable
     private struct RECT
     {
         public int Left, Top, Right, Bottom;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct POINT
+    {
+        public int X, Y;
     }
 
     [StructLayout(LayoutKind.Sequential)]
@@ -392,6 +563,9 @@ internal sealed class TrayMenuWindow : IDisposable
     private static extern bool SetForegroundWindow(IntPtr hWnd);
 
     [DllImport("user32.dll")]
+    private static extern IntPtr GetForegroundWindow();
+
+    [DllImport("user32.dll")]
     private static extern bool InvalidateRect(IntPtr hWnd, IntPtr lpRect, bool bErase);
 
     [DllImport("user32.dll")]
@@ -403,14 +577,14 @@ internal sealed class TrayMenuWindow : IDisposable
     [DllImport("user32.dll")]
     private static extern int SetWindowRgn(IntPtr hWnd, IntPtr hRgn, bool bRedraw);
 
-    [DllImport("gdi32.dll")]
-    private static extern IntPtr CreateRoundRectRgn(int x1, int y1, int x2, int y2, int w, int h);
+    [DllImport("user32.dll")]
+    private static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
+
+    [DllImport("user32.dll")]
+    private static extern bool GetCursorPos(out POINT lpPoint);
 
     [DllImport("user32.dll")]
     private static extern bool TrackMouseEvent(ref TRACKMOUSEEVENT lpEventTrack);
-
-    [DllImport("user32.dll")]
-    private static extern IntPtr ReleaseCapture();
 
     [DllImport("user32.dll")]
     private static extern bool SystemParametersInfoW(uint uiAction, uint uiParam, out RECT pvParam, uint fWinIni);
@@ -420,6 +594,9 @@ internal sealed class TrayMenuWindow : IDisposable
 
     [DllImport("user32.dll")]
     private static extern int ReleaseDC(IntPtr hWnd, IntPtr hDC);
+
+    [DllImport("gdi32.dll")]
+    private static extern IntPtr CreateRoundRectRgn(int x1, int y1, int x2, int y2, int w, int h);
 
     [DllImport("gdi32.dll")]
     private static extern IntPtr CreateSolidBrush(IntPtr crColor);

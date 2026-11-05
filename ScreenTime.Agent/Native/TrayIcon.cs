@@ -162,6 +162,15 @@ public sealed class TrayIcon : IDisposable
         {
             var data = BuildData(NIF_MESSAGE | NIF_ICON | NIF_TIP);
             ok = Shell_NotifyIcon(NIM_ADD, ref data);
+
+            // 外壳里已经有同 ID 的条目时，NIM_ADD 会返回 FALSE，但图标其实还在。
+            // 用 NIM_MODIFY 探一下：能改说明它存在，否则会陷入「一直以为丢了、一直重加」的死循环。
+            if (!ok)
+            {
+                var probe = BuildData(NIF_TIP);
+                ok = Shell_NotifyIcon(NIM_MODIFY, ref probe);
+            }
+
             if (ok) _iconPresent = true;
         }
 
@@ -222,28 +231,6 @@ public sealed class TrayIcon : IDisposable
         EnsureIcon("taskbar-created");
     }
 
-    /// <summary>手动重载（右键菜单用）：先删再登记。</summary>
-    private void ReloadIcon()
-    {
-        lock (_iconGate)
-        {
-            var del = new NOTIFYICONDATA
-            {
-                cbSize = (uint)Marshal.SizeOf<NOTIFYICONDATA>(),
-                hWnd = _hWnd,
-                uID = 1,
-                szTip = "",
-                szInfo = "",
-                szInfoTitle = ""
-            };
-            Shell_NotifyIcon(NIM_DELETE, ref del);
-        }
-        _iconPresent = false;
-        _iconPresentLogged = false;
-        AddIcon("manual-reload");
-        LogRect();
-    }
-
     private void LogRect()
     {
         var id = new NOTIFYICONIDENTIFIER
@@ -275,7 +262,9 @@ public sealed class TrayIcon : IDisposable
             Log?.Invoke($"tray: RegisterClassEx 失败 err={Marshal.GetLastWin32Error()}");
             return IntPtr.Zero;
         }
-        var hwnd = CreateWindowExW(0, WindowClassName, "ScreenTime Agent", 0,
+        // WS_EX_TOOLWINDOW(0x80)：不带的话这个隐藏的消息窗口可能被当成普通窗口，
+        // 任务栏会多出一个 ScreenTime 条目
+        var hwnd = CreateWindowExW(0x00000080, WindowClassName, "ScreenTime Agent", 0,
             0, 0, 0, 0, IntPtr.Zero, IntPtr.Zero, hInstance, IntPtr.Zero);
         if (hwnd == IntPtr.Zero)
             Log?.Invoke($"tray: CreateWindowEx 失败 err={Marshal.GetLastWin32Error()}");
@@ -356,14 +345,14 @@ public sealed class TrayIcon : IDisposable
     private static extern IntPtr GetProcAddress(IntPtr hModule, string lpProcName);
 
     private IntPtr BuildMenu()
-    {        var menu = CreatePopupMenu();
+    {
+        // 兜底用的原生菜单，条目与自绘菜单保持一致（自绘失败时才会用到）
+        var menu = CreatePopupMenu();
         AppendMenuW(menu, MF_STRING, 1, "打开统计");
         AppendMenuW(menu, MF_SEPARATOR, 0, null);
         AppendMenuW(menu, MF_STRING, 4, "暂停统计 30 分钟");
         AppendMenuW(menu, MF_STRING, 5, "暂停统计 1 小时");
         AppendMenuW(menu, MF_STRING, 6, "恢复统计");
-        AppendMenuW(menu, MF_SEPARATOR, 0, null);
-        AppendMenuW(menu, MF_STRING, 3, "重新加载托盘图标");
         AppendMenuW(menu, MF_SEPARATOR, 0, null);
         AppendMenuW(menu, MF_STRING, 2, "退出 ScreenTime");
         return menu;
@@ -453,16 +442,18 @@ public sealed class TrayIcon : IDisposable
         OnMenuPick((int)cmd);
     }
 
-    /// <summary>菜单项定义：Id 为 0 的行是分隔线。</summary>
+    /// <summary>菜单项定义：Id 为 0 的行是分隔线，Children 非空表示二级菜单。</summary>
     private static readonly TrayMenuWindow.Entry[] MenuEntries =
     {
         new("打开统计", 1),
         default,
-        new("暂停统计 30 分钟", 4),
-        new("暂停统计 1 小时", 5),
-        new("恢复统计", 6),
-        default,
-        new("重新加载托盘图标", 3),
+        new("暂停统计", 10, new TrayMenuWindow.Entry[]
+        {
+            new("30 分钟", 4),
+            new("1 小时", 5),
+            default,
+            new("恢复统计", 6),
+        }),
         default,
         new("退出 ScreenTime", 2),
     };
@@ -475,7 +466,6 @@ public sealed class TrayIcon : IDisposable
         {
             case 1: OpenRequested?.Invoke(); break;
             case 2: ExitRequested?.Invoke(); break;
-            case 3: ReloadIcon(); break;
             case 4: PauseRequested?.Invoke(30); break;
             case 5: PauseRequested?.Invoke(60); break;
             case 6: PauseRequested?.Invoke(0); break;
