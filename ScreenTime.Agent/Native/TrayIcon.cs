@@ -23,10 +23,23 @@ public struct Msg
 /// 回调**必须在 WndProc 里处理**：shell 用 PostMessage 时消息会经过队列，
 /// 用 SendMessage 时则直接进 WndProc、根本不入队。
 /// 早期版本在消息泵里拦截，一旦 shell 走 SendMessage 点击就完全没反应。
+///
+/// 图标丢失的三条防线（v1.3.6 补）：
+///  1. 登记时失败会立刻重试，并把失败写日志；
+///  2. 监听外壳的 <c>TaskbarCreated</c> 广播——Explorer 重启后所有托盘图标都会被清除，
+///     只有收到这条广播重新 NIM_ADD 才能恢复；
+///  3. 看门狗每 5 秒比对一次 <c>Shell_TrayWnd</c> 的窗口句柄，句柄变了（外壳重启）就重新登记。
+/// 早期版本只有构造时的一次 NIM_ADD，一旦失败（开机时 Explorer 还没起好）或
+/// Explorer 中途重启，图标就永久消失，而进程还在后台跑。
+///
+/// **所有 shell 调用都必须在消息线程上做**（WndProc 里）。看门狗只负责往自己的窗口
+/// PostMessage，绝不在线程池线程直接调 Shell_NotifyIcon：Explorer 被拆掉的那一瞬间
+/// 从别的线程调进去会让整个进程静默自杀（实测 3 秒内进程消失、无任何异常日志）。
 /// </summary>
 public sealed class TrayIcon : IDisposable
 {
     private const uint NIM_ADD = 0;
+    private const uint NIM_MODIFY = 1;
     private const uint NIM_DELETE = 2;
     private const uint NIF_MESSAGE = 0x1;
     private const uint NIF_ICON = 0x2;
@@ -34,6 +47,8 @@ public sealed class TrayIcon : IDisposable
     private const uint IMAGE_ICON = 1;
     private const uint LR_LOADFROMFILE = 0x0010;
     private const uint WM_DESTROY = 0x0002;
+    private const uint WM_MOUSEMOVE = 0x0200;
+    private const uint WM_NCMOUSEMOVE = 0x00A0;
     private const uint WM_CONTEXTMENU = 0x007B;
     private const uint WM_LBUTTONDOWN = 0x0201;
     private const uint WM_LBUTTONUP = 0x0202;
@@ -47,15 +62,27 @@ public sealed class TrayIcon : IDisposable
     private const uint TPM_RETURNCMD = 0x0100;
     private const uint MF_STRING = 0x0000;
     private const uint MF_SEPARATOR = 0x0800;
+    /// <summary>看门狗节拍消息（WM_APP + 2），由线程池投递到消息线程。</summary>
+    private const uint WM_WATCHDOG = 0x8000 + 0x2;
 
     private static readonly string WindowClassName = "ScreenTimeAgentTrayWnd_" + Guid.NewGuid().ToString("N");
     private static WndProcDelegate? _wndProcHolder; // 防 GC 回收
     private static TrayIcon? _current;              // WndProc 是静态的，靠它回调实例
 
+    /// <summary>外壳重启后广播的自定义消息号（各进程用同一个字符串登记，值一致）。</summary>
+    private static readonly uint TaskbarCreatedMsg = RegisterWindowMessageW("TaskbarCreated");
+
     private readonly IntPtr _hWnd;
     private readonly IntPtr _hMenu;
     private IntPtr _hIcon;
     private readonly uint _callbackMsg;
+    private readonly string _tooltip;
+    private readonly object _iconGate = new();
+    private Timer? _watchdog;
+    private bool _iconPresent;
+    private bool _disposed;
+    /// <summary>上次登记图标时 shell 托盘窗口的句柄；Explorer 重启后这个句柄一定会变。</summary>
+    private IntPtr _shellTrayHwnd;
 
     public event Action? OpenRequested;
     public event Action? ExitRequested;
@@ -71,6 +98,7 @@ public sealed class TrayIcon : IDisposable
     public TrayIcon(string tooltip, string iconPath, Action<string>? log = null)
     {
         Log = log;
+        _tooltip = tooltip ?? "";
         _callbackMsg = 0x8000 + 0x1; // WM_APP + 1
         _current = this;             // WndProc 是静态的，需要实例才能回调
         _hWnd = CreateMessageWindow();
@@ -82,27 +110,140 @@ public sealed class TrayIcon : IDisposable
             Log?.Invoke("tray: 消息窗口创建失败，托盘不可用");
             return;
         }
+        if (_hIcon == IntPtr.Zero)
+            Log?.Invoke($"tray: 图标加载失败 path={iconPath}（会显示成空白图标）");
 
-        var data = new NOTIFYICONDATA
+        // 首次登记 + 一次即时重试；失败的兜底交给看门狗（开机瞬间 Explorer 常还没起好）
+        AddIcon("startup");
+        if (!_iconPresent)
         {
-            cbSize = (uint)Marshal.SizeOf<NOTIFYICONDATA>(),
-            hWnd = _hWnd,
-            uID = 1,
-            uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP,
-            uCallbackMessage = _callbackMsg,
-            hIcon = _hIcon,
-            szTip = tooltip
-        };
-        var ok = Shell_NotifyIcon(NIM_ADD, ref data);
-        Log?.Invoke($"tray: NIM_ADD ok={ok} hwnd=0x{_hWnd.ToInt64():X} icon=0x{_hIcon.ToInt64():X} cbSize={data.cbSize}");
-        if (!ok)
-        {
-            // 常见原因：资源管理器未就绪。重试一次，多数情况能成功。
-            ok = Shell_NotifyIcon(NIM_ADD, ref data);
-            Log?.Invoke($"tray: NIM_ADD retry ok={ok}");
+            Thread.Sleep(200);
+            AddIcon("startup-retry");
         }
 
-        // 记录图标在屏幕上的实际位置：便于排查「图标在哪 / 是否进了溢出区」
+        LogRect();
+
+        _shellTrayHwnd = FindWindowW("Shell_TrayWnd", null);
+
+        // 看门狗：3 秒后开始，之后每 5 秒只是给自己的窗口 PostMessage，
+        // 真正的 shell 调用在 WndProc 里做（见类注释）
+        _watchdog = new Timer(_ => PostWatchdogTick(), null, TimeSpan.FromSeconds(3), TimeSpan.FromSeconds(5));
+    }
+
+    /// <summary>按当前状态组装 NOTIFYICONDATA（必须用完整结构，cbSize 少了某些系统会拒绝登记）。</summary>
+    private NOTIFYICONDATA BuildData(uint flags) => new()
+    {
+        cbSize = (uint)Marshal.SizeOf<NOTIFYICONDATA>(),
+        hWnd = _hWnd,
+        uID = 1,
+        uFlags = flags,
+        uCallbackMessage = _callbackMsg,
+        hIcon = _hIcon,
+        szTip = _tooltip,
+        szInfo = "",
+        szInfoTitle = ""
+    };
+
+    /// <summary>登记托盘图标；返回是否成功。状态没变化时不重复写日志，避免看门狗刷屏。</summary>
+    private bool AddIcon(string reason)
+    {
+        if (_hWnd == IntPtr.Zero || _disposed) return false;
+
+        bool ok;
+        lock (_iconGate)
+        {
+            var data = BuildData(NIF_MESSAGE | NIF_ICON | NIF_TIP);
+            ok = Shell_NotifyIcon(NIM_ADD, ref data);
+            if (ok) _iconPresent = true;
+        }
+
+        if (ok)
+        {
+            if (!_iconPresentLogged)
+            {
+                Log?.Invoke($"tray: 图标已登记 ({reason}) hwnd=0x{_hWnd.ToInt64():X} icon=0x{_hIcon.ToInt64():X}");
+                _iconPresentLogged = true;
+            }
+        }
+        else
+        {
+            if (_iconPresentLogged || reason != "watchdog-silent")
+                Log?.Invoke($"tray: 图标登记失败 ({reason}) err={Marshal.GetLastWin32Error()}，等看门狗重试");
+            _iconPresentLogged = false;
+        }
+        return ok;
+    }
+
+    private bool _iconPresentLogged;
+
+    /// <summary>
+    /// 看门狗（线程池侧）：只往自己的消息窗口投递一条消息，不碰任何 shell API。
+    /// </summary>
+    private void PostWatchdogTick()
+    {
+        try
+        {
+            if (_disposed || _hWnd == IntPtr.Zero) return;
+            PostMessageW(_hWnd, WM_WATCHDOG, IntPtr.Zero, IntPtr.Zero);
+        }
+        catch (Exception ex) { Log?.Invoke("tray: watchdog post ERROR " + ex.Message); }
+    }
+
+    /// <summary>
+    /// 看门狗（消息线程侧）：外壳托盘窗口的句柄变了就说明 Explorer 重启过，重新登记图标。
+    /// 不用 NIM_MODIFY 探测——外壳正在被拆的那一瞬间调用它会让整个进程静默崩溃。
+    /// </summary>
+    private void CheckShellTray(string reason)
+    {
+        if (_disposed || _hWnd == IntPtr.Zero) return;
+
+        var tray = FindWindowW("Shell_TrayWnd", null);
+        if (tray == IntPtr.Zero) return;          // 外壳还没起来，下一个节拍再看
+
+        if (tray == _shellTrayHwnd && _iconPresent) return;
+
+        if (_shellTrayHwnd != IntPtr.Zero && tray != _shellTrayHwnd)
+            Log?.Invoke($"tray: 检测到外壳重启（托盘窗口 0x{_shellTrayHwnd.ToInt64():X} -> 0x{tray.ToInt64():X}），重新登记图标");
+        else if (!_iconPresent)
+            Log?.Invoke($"tray: 图标未登记，补登记 ({reason})");
+
+        _shellTrayHwnd = tray;
+        _iconPresentLogged = false;
+        AddIcon(reason);
+    }
+
+    /// <summary>Explorer 重启后外壳会向所有顶层窗口广播 TaskbarCreated。</summary>
+    private void OnTaskbarCreated()
+    {
+        Log?.Invoke("tray: 收到 TaskbarCreated（外壳重启），重新登记图标");
+        _shellTrayHwnd = IntPtr.Zero;      // 强制走一次重新登记
+        CheckShellTray("taskbar-created");
+    }
+
+    /// <summary>手动重载（右键菜单用）：先删再登记。</summary>
+    private void ReloadIcon()
+    {
+        lock (_iconGate)
+        {
+            var del = new NOTIFYICONDATA
+            {
+                cbSize = (uint)Marshal.SizeOf<NOTIFYICONDATA>(),
+                hWnd = _hWnd,
+                uID = 1,
+                szTip = "",
+                szInfo = "",
+                szInfoTitle = ""
+            };
+            Shell_NotifyIcon(NIM_DELETE, ref del);
+        }
+        _iconPresent = false;
+        _iconPresentLogged = false;
+        AddIcon("manual-reload");
+        LogRect();
+    }
+
+    private void LogRect()
+    {
         var id = new NOTIFYICONIDENTIFIER
         {
             cbSize = (uint)Marshal.SizeOf<NOTIFYICONIDENTIFIER>(),
@@ -123,7 +264,8 @@ public sealed class TrayIcon : IDisposable
             cbSize = (uint)Marshal.SizeOf<WNDCLASSEX>(),
             lpfnWndProc = Marshal.GetFunctionPointerForDelegate(_wndProcHolder = WndProc),
             hInstance = hInstance,
-            lpszClassName = WindowClassName
+            lpszClassName = WindowClassName,
+            lpszMenuName = ""
         };
         var atom = RegisterClassExW(ref wc);
         if (atom == 0)
@@ -155,6 +297,8 @@ public sealed class TrayIcon : IDisposable
         var menu = CreatePopupMenu();
         AppendMenuW(menu, MF_STRING, 1, "打开统计");
         AppendMenuW(menu, MF_SEPARATOR, 0, null);
+        AppendMenuW(menu, MF_STRING, 3, "重新加载托盘图标");
+        AppendMenuW(menu, MF_SEPARATOR, 0, null);
         AppendMenuW(menu, MF_STRING, 2, "退出 ScreenTime");
         return menu;
     }
@@ -171,6 +315,10 @@ public sealed class TrayIcon : IDisposable
 
     private void HandleMouseMessage(uint mouseMsg)
     {
+        // 经典模式下鼠标划过图标会持续发 WM_MOUSEMOVE，
+        // 早期版本把每条都写进日志，一天能刷出上千行、白白 IO。
+        if (mouseMsg == WM_MOUSEMOVE || mouseMsg == WM_NCMOUSEMOVE) return;
+
         Log?.Invoke($"tray: callback 0x{mouseMsg:X}");
         switch (mouseMsg)
         {
@@ -208,6 +356,7 @@ public sealed class TrayIcon : IDisposable
         Log?.Invoke($"tray: menu cmd={cmd}");
         if (cmd == 1) OpenRequested?.Invoke();
         else if (cmd == 2) ExitRequested?.Invoke();
+        else if (cmd == 3) ReloadIcon();
     }
 
     private static IntPtr WndProc(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam)
@@ -215,6 +364,20 @@ public sealed class TrayIcon : IDisposable
         if (msg == WM_DESTROY)
         {
             PostQuitMessage(0);
+            return IntPtr.Zero;
+        }
+
+        // 外壳重启广播：必须在 WndProc 里接，进程才可能把图标补回去
+        if (TaskbarCreatedMsg != 0 && msg == TaskbarCreatedMsg)
+        {
+            _current?.OnTaskbarCreated();
+            return IntPtr.Zero;
+        }
+
+        // 看门狗节拍：由线程池投递过来，真正的 shell 调用在这里执行
+        if (msg == WM_WATCHDOG)
+        {
+            _current?.CheckShellTray("watchdog");
             return IntPtr.Zero;
         }
 
@@ -230,15 +393,23 @@ public sealed class TrayIcon : IDisposable
 
     public void Dispose()
     {
+        _disposed = true;
+        try { _watchdog?.Dispose(); } catch { }
         try
         {
-            var data = new NOTIFYICONDATA
+            if (_hWnd != IntPtr.Zero)
             {
-                cbSize = (uint)Marshal.SizeOf<NOTIFYICONDATA>(),
-                hWnd = _hWnd,
-                uID = 1
-            };
-            if (_hWnd != IntPtr.Zero) Shell_NotifyIcon(NIM_DELETE, ref data);
+                var data = new NOTIFYICONDATA
+                {
+                    cbSize = (uint)Marshal.SizeOf<NOTIFYICONDATA>(),
+                    hWnd = _hWnd,
+                    uID = 1,
+                    szTip = "",
+                    szInfo = "",
+                    szInfoTitle = ""
+                };
+                Shell_NotifyIcon(NIM_DELETE, ref data);
+            }
             if (_hIcon != IntPtr.Zero) DestroyIcon(_hIcon);
             if (_hMenu != IntPtr.Zero) DestroyMenu(_hMenu);
             if (_hWnd != IntPtr.Zero) DestroyWindow(_hWnd);
@@ -247,6 +418,11 @@ public sealed class TrayIcon : IDisposable
         if (ReferenceEquals(_current, this)) _current = null;
     }
 
+    /// <summary>
+    /// 完整版 NOTIFYICONDATAW（x64 下 976 字节）。
+    /// 早期版本只声明到 szTip 就结束（cbSize=296），虽然多数系统容忍，
+    /// 但 shell 对 cbSize 的校验按已知尺寸进行，非标准尺寸在部分环境会被拒。
+    /// </summary>
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
     private struct NOTIFYICONDATA
     {
@@ -258,6 +434,16 @@ public sealed class TrayIcon : IDisposable
         public IntPtr hIcon;
         [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 128)]
         public string szTip;
+        public uint dwState;
+        public uint dwStateMask;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 256)]
+        public string szInfo;
+        public uint uTimeoutOrVersion;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 64)]
+        public string szInfoTitle;
+        public uint dwInfoFlags;
+        public Guid guidItem;
+        public IntPtr hBalloonIcon;
     }
 
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
@@ -307,6 +493,12 @@ public sealed class TrayIcon : IDisposable
 
     [DllImport("shell32.dll")]
     private static extern int Shell_NotifyIconGetRect(ref NOTIFYICONIDENTIFIER identifier, out RECT iconLocation);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern uint RegisterWindowMessageW(string lpString);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern IntPtr FindWindowW(string? lpClassName, string? lpWindowName);
 
     [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     private static extern ushort RegisterClassExW(ref WNDCLASSEX lpwcx);
