@@ -31,6 +31,10 @@ internal static class Program
     private static HistoryImportService _historyImport = null!;
     private static TrayIcon? _tray;
     private static volatile bool _exit;
+    /// <summary>退出原因（quit / tray-exit），只用于日志定位。</summary>
+    private static string _stopReason = "";
+    /// <summary>消息泵 GetMessage 返回 -1 的累计次数，正常应始终为 0。</summary>
+    private static int _msgLoopErrors;
     /// <summary>托盘提示刷新定时器（间隔取自设置 refresh_seconds）。</summary>
     private static System.Threading.Timer? _tooltipTimer;
 
@@ -315,7 +319,7 @@ internal static class Program
         try { _tooltipTimer?.Dispose(); } catch { }
         try { _watcher.Dispose(); } catch { }
         try { _tray.Dispose(); } catch { }
-        WriteLog("agent stopped");
+        WriteLog($"agent stopped reason={(_stopReason.Length == 0 ? "unknown" : _stopReason)} msgLoopErrors={_msgLoopErrors}");
     }
 
     /// <summary>轮询 UI 写入的 settings_version，变化则让采集器热重载设置。</summary>
@@ -356,7 +360,25 @@ internal static class Program
         while (!_exit)
         {
             var r = GetMessageW(out var msg, IntPtr.Zero, 0, 0);
-            if (r <= 0) { _exit = true; break; }   // 0 = WM_QUIT，-1 = 错误，都该退出
+            if (r == 0)
+            {
+                // 只有 WM_QUIT 才是退出信号
+                if (_stopReason.Length == 0) _stopReason = "quit";
+                _exit = true;
+                break;
+            }
+            if (r == -1)
+            {
+                // -1 是调用错误（错误码在 last error 里），不是退出信号。
+                // Modern Standby 唤醒的瞬间会短暂出现；v1.4.3 把这里当成退出，
+                // 结果 13:24 唤醒后 Agent 跟着一起消失，托盘空窗 8 小时。
+                // 退避后继续等消息；日志限流，避免消息队列持续异常时刷屏。
+                _msgLoopErrors++;
+                if (_msgLoopErrors <= 3 || _msgLoopErrors % 100 == 0)
+                    WriteLog($"msg loop error={Marshal.GetLastWin32Error()} count={_msgLoopErrors}");
+                Thread.Sleep(100);
+                continue;
+            }
             TranslateMessage(ref msg);
             DispatchMessageW(ref msg);
         }
@@ -467,6 +489,7 @@ internal static class Program
 
     private static void ExitAgent()
     {
+        _stopReason = "tray-exit";
         try { _db.AddSessionEvent("shutdown"); } catch { }
         _exit = true;
         // 消息泵现在是阻塞式 GetMessage，置标志叫不醒它，必须投 WM_QUIT。
@@ -705,7 +728,7 @@ internal static class Program
         WriteLog("ERROR: " + ex);
     }
 
-    [DllImport("user32.dll")]
+    [DllImport("user32.dll", SetLastError = true)]
     private static extern int GetMessageW(out Msg lpMsg, IntPtr hWnd, uint wMsgFilterMin,
         uint wMsgFilterMax);
 
