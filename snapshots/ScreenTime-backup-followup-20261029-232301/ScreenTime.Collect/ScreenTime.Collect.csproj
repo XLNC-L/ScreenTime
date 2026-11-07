@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
+    <TargetPlatformMinVersion>10.0.17763.0</TargetPlatformMinVersion>
+    <RootNamespace>ScreenTime</RootNamespace>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <Version>1.2.0</Version>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- 采集纯逻辑层：前台/音频/会话事件采集与 UWP 图标回填，不依赖 WinUI，
+         供 UI 进程与无 UI 的采集器进程（ScreenTime.Agent）共用 -->
+    <ProjectReference Include="..\ScreenTime.Core\ScreenTime.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- 锁屏/睡眠事件（SessionState）依赖系统事件 -->
+    <PackageReference Include="Microsoft.Win32.SystemEvents" Version="9.0.1" />
+  </ItemGroup>
+
+</Project>
