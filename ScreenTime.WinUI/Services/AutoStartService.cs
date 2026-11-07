@@ -117,7 +117,62 @@ public static class AutoStartService
         var args = $"/Create /TN \"{TaskName}\" /SC ONLOGON{level} /F /TR \"\\\"{exe}\\\"\"";
 
         // 先静默尝试（普通权限任务通常无需提权）；权限不足时提升权限再试一次。
-        return RunSchtasks(args, elevate: false) || RunSchtasks(args, elevate: true);
+        var ok = RunSchtasks(args, elevate: false) || RunSchtasks(args, elevate: true);
+        if (ok) TryEnableRestartOnFailure();
+        return ok;
+    }
+
+    /// <summary>
+    /// 给任务加「失败后自动重启」：进程以非 0 退出码结束（未捕获异常等）时，
+    /// 计划任务在 1 分钟后最多再拉起 3 次，避免掉线后干等到下次登录。
+    /// schtasks 命令行没有这个参数，Set-ScheduledTask 又会把 Interval 序列化成
+    /// 非 ISO8601 的 "00:01:00" 被 schema 拒绝（实测 HRESULT 0x80041318），
+    /// 所以直接改任务 XML 再导入。失败只写日志，不影响自启本身。
+    /// </summary>
+    private static void TryEnableRestartOnFailure()
+    {
+        try
+        {
+            var xml = QueryTaskXml();
+            if (string.IsNullOrWhiteSpace(xml)) return;
+
+            var doc = new System.Xml.XmlDocument();
+            doc.LoadXml(xml);
+            var root = doc.DocumentElement;
+            var settings = root?["Settings"];
+            if (root is null || settings is null) return;
+            if (settings["RestartOnFailure"] is not null) return;   // 已经有了
+
+            var ns = root.NamespaceURI;
+            var restart = doc.CreateElement("RestartOnFailure", ns);
+            var interval = doc.CreateElement("Interval", ns);
+            interval.InnerText = "PT1M";
+            var count = doc.CreateElement("Count", ns);
+            count.InnerText = "3";
+            restart.AppendChild(interval);
+            restart.AppendChild(count);
+            settings.AppendChild(restart);
+
+            // 任务 XML 必须是 UTF-16，和系统里的 Tasks 文件一致
+            var path = Path.Combine(Path.GetTempPath(), $"st-task-{Environment.ProcessId}.xml");
+            var ws = new System.Xml.XmlWriterSettings
+            {
+                Encoding = System.Text.Encoding.Unicode,
+                Indent = true
+            };
+            using (var writer = System.Xml.XmlWriter.Create(path, ws))
+                doc.Save(writer);
+
+            var import = $"/Create /TN \"{TaskName}\" /XML \"{path}\" /F";
+            if (!RunSchtasks(import, elevate: false))
+                RunSchtasks(import, elevate: true);
+
+            try { File.Delete(path); } catch { }
+        }
+        catch (Exception ex)
+        {
+            Log($"restart-on-failure threw: {ex.GetType().Name}: {ex.Message}");
+        }
     }
 
     public static bool Disable()

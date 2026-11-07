@@ -29,6 +29,9 @@ public partial class TodayPage : Page
 
     private List<TimelineRow> _timeline = new();
 
+    /// <summary>采集器掉线的时段（shutdown → 下一个 boot/display_on），画成灰色块。</summary>
+    private List<(DateTime StartLocal, DateTime EndLocal, bool SystemDown)> _gaps = new();
+
     /// <summary>应用排行绑定的集合：只建一次，刷新时增量同步（见 ListSync）。</summary>
     private readonly System.Collections.ObjectModel.ObservableCollection<AppRankItem> _rankRows = new();
 
@@ -232,7 +235,8 @@ public partial class TodayPage : Page
             var allApps = _db.GetAllApps();
             var purposes = _db.QueryPurposeUsage(from, to);
             var timeline = _db.QueryTimeline(today);
-            return (Apps: apps, AllApps: allApps, Purposes: purposes, Timeline: timeline);
+            var gaps = _db.QueryCollectorGaps(today);
+            return (Apps: apps, AllApps: allApps, Purposes: purposes, Timeline: timeline, Gaps: gaps);
         });
         var apps = snapshot.Apps;
 
@@ -270,6 +274,7 @@ public partial class TodayPage : Page
         LoadPurpose(snapshot.Purposes);
 
         _timeline = snapshot.Timeline;
+        _gaps = snapshot.Gaps;
         // 时间线全量重建降频：30 秒节拍里，5 分钟内不重画整条轨道——
         // 期间新片段对轨道形状影响很小，游标由秒级 tick 平滑平移即可；
         // 跨天 / 主题切换 / 窗口尺寸变化走强制重建（上面已把 _lastTimelineDraw 置 MinValue）。
@@ -417,6 +422,13 @@ public partial class TodayPage : Page
         var dataEnd = bars.Max(b => b.E);
         if (dataEnd < localNow && localNow.Date == dataStart.Date) dataEnd = localNow;
 
+        // 掉线时段也纳入范围，否则灰色块会被裁到轨道边缘
+        foreach (var g in _gaps)
+        {
+            if (g.StartLocal < dataStart) dataStart = g.StartLocal;
+            if (g.EndLocal > dataEnd) dataEnd = g.EndLocal;
+        }
+
         // 根据跨度选择刻度间隔
         var rawHours = (dataEnd - dataStart).TotalHours;
         var tickMinutes = rawHours > 8 ? 120 : rawHours > 3 ? 60 : rawHours > 1 ? 30 : 15;
@@ -431,6 +443,34 @@ public partial class TodayPage : Page
 
         double X(DateTime t) =>
             Math.Clamp((t - rangeStart).TotalSeconds / span.TotalSeconds * w, 0, w);
+
+        // 采集器掉线的时段：灰色块压在片段下面，悬停说明「未记录」的原因
+        foreach (var (gs, ge, systemDown) in _gaps)
+        {
+            var x = X(gs);
+            var width = X(ge) - x;
+            if (width < 2) width = 2;
+
+            var tip = systemDown
+                ? $"未记录：设备关机 {gs:HH:mm}–{ge:HH:mm}"
+                : $"未记录：采集器未运行 {gs:HH:mm}–{ge:HH:mm}";
+            var gapBar = new Border
+            {
+                Width = width,
+                Height = 24,
+                HorizontalAlignment = HorizontalAlignment.Left,
+                VerticalAlignment = VerticalAlignment.Center,
+                Margin = new Thickness(x, 0, 0, 0),
+                Background = Application.Current.Resources["SubtleFillColorTertiaryBrush"] as Brush,
+                BorderBrush = Application.Current.Resources["ControlStrokeColorDefaultBrush"] as Brush,
+                BorderThickness = new Thickness(1),
+                CornerRadius = new CornerRadius(4),
+                Opacity = 0.6
+            };
+            ToolTipService.SetToolTip(gapBar, tip);
+            gapBar.PointerEntered += (_, _) => TimelineDetail.Text = tip;
+            TimelineGrid.Children.Add(gapBar);
+        }
 
         foreach (var (s, e, row) in bars)
         {

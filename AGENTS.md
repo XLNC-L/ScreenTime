@@ -44,36 +44,38 @@ dotnet run --project tools\menu-probe         :: 托盘菜单回归（弹出/关
 2. **不要手改 `bin/`、`obj/`、`dist/`、`ScreenTime-WinUI/`、`qa/`。** 都是构建/本地产物，已在 .gitignore。
 3. **不要提交** `*.zip`、`*.db`、`*.log`、安装包。
 4. **不要在 `D:\ScreenTime` 里改代码。** 那是正在运行的发布产物，只读。
-5. **版本号在 3 个 csproj 里各写了一份**（`ScreenTime.WinUI`、`ScreenTime.Agent`、`ScreenTime.Collect` 的 `<Version>`），改版本必须三处同步。
+5. **版本号只在 `Directory.Build.props` 写一份**（v1.4.5 起），三个 csproj 不再各写 `<Version>`；
+   CI / 发布脚本仍可用 `-p:Version=x.y.z` 覆盖。
 6. 依赖用 `packages.lock.json` 锁定，改了 PackageReference 记得把锁文件一起提交。
 7. **写日志统一用 `ScreenTime.LogFile`**，不要直接 `File.AppendAllText`——它负责 2 MB 滚动，
-   否则常驻进程的日志会无限增长。
+   保留 3 份历史（`xxx.log.1` ~ `.3`，最多 8 MB），否则常驻进程的日志会无限增长。
 8. **部署要按发布口径**：`dotnet publish -c Release -r win-x64`（项目开了 `PublishReadyToRun`），
    `dotnet build` 出来的不是 R2R；换版本号时 `ScreenTime.{WinUI,Agent,Collect,Core}.dll` 必须整套替换。
 9. **动了 XAML 就必须带上 `resources.pri`**：xbf 编译产物在里面，只换 dll 会让
    `SettingsPage.Connect` 这类生成的绑定代码取到错位的控件，抛 `InvalidCastException`，
    表现是「点导航没反应、页面切不过去」。完整清单：`ScreenTime.exe`、`ScreenTime.dll`、
    `resources.pri`、`ScreenTime.Agent.exe/.dll`、`ScreenTime.Collect.dll`、`ScreenTime.Core.dll`。
-7. **安装器界面文案靠 `installer\languages\ChineseSimplified.isl`**（Inno 官方包不含中文）。
-   不要改回 `compiler:Default.isl`，那会让向导变回英文。
-8. **不要删 `Microsoft.UI.Xaml.Phone.dll`**：名字像手机专用，实际是 WinUI 启动期硬依赖，
-   删掉后界面直接起不来（已实测）。发布精简只允许删 pdb、DiaSymReader、多余语言目录。
-9. 安装器新增了「仅为我 / 为所有用户」选择（`PrivilegesRequiredOverridesAllowed=dialog`），
-   静默安装必须带 `/CURRENTUSER` 或 `/ALLUSERS`，否则会卡在这个对话框。
-10. **Win32 窗口只能在创建它的线程销毁**。定时器/线程池里看到窗口要关，一律
+10. **安装器界面文案靠 `installer\languages\ChineseSimplified.isl`**（Inno 官方包不含中文）。
+    不要改回 `compiler:Default.isl`，那会让向导变回英文。
+11. **不要删 `Microsoft.UI.Xaml.Phone.dll`**：名字像手机专用，实际是 WinUI 启动期硬依赖，
+    删掉后界面直接起不来（已实测）。发布精简只允许删 pdb、DiaSymReader、多余语言目录。
+12. 安装器新增了「仅为我 / 为所有用户」选择（`PrivilegesRequiredOverridesAllowed=dialog`），
+    静默安装必须带 `/CURRENTUSER` 或 `/ALLUSERS`，否则会卡在这个对话框。
+13. **Win32 窗口只能在创建它的线程销毁**。定时器/线程池里看到窗口要关，一律
     `PostMessage(WM_APP_CLOSE)` 回消息线程（见 `TrayMenuWindow.RequestClose`），
     直接跨线程 `DestroyWindow` 会静默失败，窗口留在屏幕上且是 topmost，谁也关不掉——
     v1.4.1 的「菜单套娃」就是这么来的。
-11. **弹窗类菜单不要指望 `SetForegroundWindow`**：托盘进程在后台，系统常会拒绝，
+14. **弹窗类菜单不要指望 `SetForegroundWindow`**：托盘进程在后台，系统常会拒绝，
     拿不到 `WM_ACTIVATE` 就没有「点外面自动关」。「点外面关闭」用
     `SetWinEventHook(EVENT_SYSTEM_FOREGROUND)` 前台切换通知（见
     `TrayMenuWindow.InstallWinEventHook`），窗口清零后摘钩。
-12. **禁止 `WH_MOUSE_LL` 低级鼠标钩子**（v1.4.2 的教训）：它拦截全系统每一次鼠标事件，
+15. **禁止 `WH_MOUSE_LL` 低级鼠标钩子**（v1.4.2 的教训）：它拦截全系统每一次鼠标事件，
     回调稍有延迟整个桌面鼠标都会「被拖住」。感知外界变化用 WinEvent（不碰输入流）。
-13. **消息泵必须阻塞式 `GetMessage`**，不能 `PeekMessage + Sleep` 轮询：
+16. **消息泵必须阻塞式 `GetMessage`**，不能 `PeekMessage + Sleep` 轮询：
     WinEvent 回调、跨线程 PostMessage 的落地延迟全由泵决定，轮询平均多拖半个周期。
-    退出时投递 `WM_QUIT`（见 `Program.RunMessageLoop` / `ExitAgent`）。
-14. `TrayMenuWindow.ShowAt` 的 X 坐标有两种语义：根菜单按**中心点**居中（托盘图标），
+    **只有返回 0（WM_QUIT）才退出；返回 -1 是调用错误**，记录错误码后退避继续等消息—
+    v1.4.4 曾把 -1 也当退出，Modern Standby 唤醒瞬间 Agent 静默消失，托盘空窗 8 小时。
+17. `TrayMenuWindow.ShowAt` 的 X 坐标有两种语义：根菜单按**中心点**居中（托盘图标），
     子菜单传**左边**，用 `centerX` 参数区分。搞混了子菜单会左移半个宽度压住父菜单。
 
 ## 4. 收尾动作（每次会话结束前）

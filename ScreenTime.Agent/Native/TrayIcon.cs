@@ -84,6 +84,8 @@ public sealed class TrayIcon : IDisposable
     private Timer? _watchdog;
     private bool _iconPresent;
     private bool _disposed;
+    /// <summary>当前暂停截止时间；只用于菜单文案，不参与采集。</summary>
+    private DateTime? _pausedUntil;
 
     public event Action? OpenRequested;
     public event Action? ExitRequested;
@@ -431,7 +433,7 @@ public sealed class TrayIcon : IDisposable
         GetCursorPos(out var pt);
 
         // 先走自绘菜单（WinUI 观感）；极端情况下失败再退回原生菜单
-        if (TrayMenuWindow.Show(pt.X, pt.Y, MenuEntries, OnMenuPick, Log)) return;
+        if (TrayMenuWindow.Show(pt.X, pt.Y, CurrentMenuEntries(), OnMenuPick, Log)) return;
 
         // 弹菜单前必须把消息窗口设成前台，否则点击菜单外部不会自动收起
         SetForegroundWindow(_hWnd);
@@ -442,21 +444,45 @@ public sealed class TrayIcon : IDisposable
         OnMenuPick((int)cmd);
     }
 
-    /// <summary>菜单项定义：Id 为 0 的行是分隔线，Children 非空表示二级菜单。</summary>
-    private static readonly TrayMenuWindow.Entry[] MenuEntries =
+    /// <summary>同步暂停状态，供菜单文案使用（由 UpdateTrayTooltip 每次刷新时调用）。</summary>
+    public void SetPaused(DateTime? until) => _pausedUntil = until;
+
+    /// <summary>
+    /// 菜单项定义：Id 为 0 的行是分隔线，Children 非空表示二级菜单。
+    /// 暂停中把文案换成「已暂停至 HH:mm」，子菜单把「恢复统计」提到第一项，
+    /// 这样不用悬停 tooltip 也能看出当前处于暂停。
+    /// </summary>
+    private TrayMenuWindow.Entry[] CurrentMenuEntries()
     {
-        new("打开统计", 1),
-        default,
-        new("暂停统计", 10, new TrayMenuWindow.Entry[]
+        var pauseText = _pausedUntil is { } u
+            ? $"暂停统计（已暂停至 {u.ToLocalTime():HH:mm}）"
+            : "暂停统计";
+
+        var pauseChildren = _pausedUntil is not null
+            ? new TrayMenuWindow.Entry[]
+            {
+                new("恢复统计", 6),
+                default,
+                new("30 分钟", 4),
+                new("1 小时", 5),
+            }
+            : new TrayMenuWindow.Entry[]
+            {
+                new("30 分钟", 4),
+                new("1 小时", 5),
+                default,
+                new("恢复统计", 6),
+            };
+
+        return new TrayMenuWindow.Entry[]
         {
-            new("30 分钟", 4),
-            new("1 小时", 5),
+            new("打开统计", 1),
             default,
-            new("恢复统计", 6),
-        }),
-        default,
-        new("退出 ScreenTime", 2),
-    };
+            new(pauseText, 10, pauseChildren),
+            default,
+            new("退出 ScreenTime", 2),
+        };
+    }
 
     private void OnMenuPick(int id)
     {

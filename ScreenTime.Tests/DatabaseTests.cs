@@ -431,4 +431,41 @@ public class DatabaseTests : IDisposable
         Assert.Equal("长用2", longest!.AppName);
         Assert.Equal(200, longest.Seconds, 1);
     }
+
+    // ---------- 采集器掉线时段 ----------
+
+    [Fact]
+    public void QueryCollectorGaps_ShutdownToDisplayOn_FlagsCollectorDown()
+    {
+        var day = new DateTime(2026, 1, 1);          // 本地时间
+        _db.AddSessionEventAt("shutdown", day.AddHours(13).ToUniversalTime());
+        _db.AddSessionEventAt("display_on", day.AddHours(21).ToUniversalTime());
+
+        var gap = Assert.Single(_db.QueryCollectorGaps(day));
+        Assert.False(gap.SystemDown);
+        Assert.Equal(13, gap.StartLocal.Hour);
+        Assert.Equal(21, gap.EndLocal.Hour);
+    }
+
+    [Fact]
+    public void QueryCollectorGaps_ShutdownToBoot_FlagsSystemDown()
+    {
+        var day = new DateTime(2026, 1, 1);
+        _db.AddSessionEventAt("shutdown", day.AddHours(22).ToUniversalTime());
+        _db.AddSessionEventAt("boot", day.AddHours(23).ToUniversalTime());
+
+        var gap = Assert.Single(_db.QueryCollectorGaps(day));
+        Assert.True(gap.SystemDown);
+        Assert.Equal(1, (gap.EndLocal - gap.StartLocal).TotalHours, 1);
+    }
+
+    [Fact]
+    public void QueryCollectorGaps_ShortRestart_IsIgnored()
+    {
+        var day = new DateTime(2026, 1, 1);
+        _db.AddSessionEventAt("shutdown", day.AddHours(10).ToUniversalTime());
+        _db.AddSessionEventAt("display_on", day.AddHours(10).AddMinutes(2).ToUniversalTime());
+
+        Assert.Empty(_db.QueryCollectorGaps(day));
+    }
 }

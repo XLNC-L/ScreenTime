@@ -18,6 +18,9 @@ public partial class MainWindow : Window
     private object? _navParam;
     private string? _currentTag;
     private readonly DispatcherTimer _purposePollTimer;
+    private readonly DispatcherTimer _agentCheckTimer;
+    /// <summary>用户手动关掉掉线告警后，本次会话不再自动弹；心跳恢复后重置。</summary>
+    private bool _agentBarDismissed;
 
     public MainWindow()
     {
@@ -48,6 +51,13 @@ public partial class MainWindow : Window
         _purposePollTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(30) };
         _purposePollTimer.Tick += (_, _) => PollPendingPurpose();
         _purposePollTimer.Start();
+
+        // 采集器健康检查：Agent 退出后托盘会一起消失，界面必须主动说出来，
+        // 否则像 11-07 那样静默掉 8 小时也没人发现（心跳由 Agent 每 30 秒写一次）。
+        _agentCheckTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(60) };
+        _agentCheckTimer.Tick += async (_, _) => await CheckAgentHealthAsync();
+        _agentCheckTimer.Start();
+        _ = CheckAgentHealthAfterDelayAsync();
 
         // 初始导航（支持 --page=xxx 直达指定页面）
         // 先应用「网页」入口可见性：开关关着时 --page=web 也要落到历史页
@@ -227,6 +237,56 @@ public partial class MainWindow : Window
         }
 
         if (ContentFrame.Content is HistoryPage created) created.FilterByCategory(category);
+    }
+
+    /// <summary>首次检查等 5 秒，给刚启动的 Agent 写心跳的时间。</summary>
+    private async System.Threading.Tasks.Task CheckAgentHealthAfterDelayAsync()
+    {
+        await System.Threading.Tasks.Task.Delay(TimeSpan.FromSeconds(5));
+        DispatcherQueue.TryEnqueue(() => _ = CheckAgentHealthAsync());
+    }
+
+    /// <summary>
+    /// 心跳超过 90 秒没更新就认为采集器掉了（Agent 每 30 秒写一次）。
+    /// 命中后顶部 InfoBar 给出「重启采集器」，点一下即可拉起，不必重新开界面。
+    /// </summary>
+    private async System.Threading.Tasks.Task CheckAgentHealthAsync()
+    {
+        string? raw;
+        try { raw = await System.Threading.Tasks.Task.Run(() => App.Current.Database.GetSetting("agent_heartbeat", "")); }
+        catch { return; }
+
+        DateTime? beat = null;
+        try { beat = string.IsNullOrWhiteSpace(raw) ? null : ScreenTime.Data.Database.ParseIso(raw); } catch { }
+
+        var stale = beat is null || (DateTime.UtcNow - beat.Value).TotalSeconds > 90;
+        if (!stale)
+        {
+            _agentBarDismissed = false;
+            AgentDownBar.IsOpen = false;
+            return;
+        }
+        if (_agentBarDismissed) return;
+
+        AgentDownBar.Message = beat is { } b
+            ? $"最后一次心跳 {b.ToLocalTime():HH:mm}，之后的使用不会被记录。"
+            : "还没有收到心跳，这段时间的使用不会被记录。";
+        AgentDownBar.IsOpen = true;
+    }
+
+    private async void AgentRestart_Click(object sender, RoutedEventArgs e)
+    {
+        AgentDownBar.IsOpen = false;
+        _agentBarDismissed = false;
+        App.EnsureAgentRunning();
+        await System.Threading.Tasks.Task.Delay(TimeSpan.FromSeconds(5));
+        _ = CheckAgentHealthAsync();
+    }
+
+    private void AgentBar_Closed(InfoBar sender, InfoBarClosedEventArgs args)
+    {
+        // 用户自己关掉就不再打扰（心跳恢复后 _agentBarDismissed 会重置）
+        _agentBarDismissed = true;
     }
 
     /// <summary>轮询 Agent 写入的待标注片段（settings.pending_purpose），弹出用途选择。</summary>

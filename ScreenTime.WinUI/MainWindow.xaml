@@ -8,6 +8,7 @@
     <Grid>
         <Grid.RowDefinitions>
             <RowDefinition Height="40" />
+            <RowDefinition Height="Auto" />
             <RowDefinition Height="*" />
         </Grid.RowDefinitions>
 
@@ -27,9 +28,23 @@
             </StackPanel>
         </Grid>
 
+        <!-- 采集器掉线告警：UI 只在开着时看得到（与目标提醒同一设计口径） -->
+        <InfoBar
+            x:Name="AgentDownBar"
+            Grid.Row="1"
+            IsOpen="False"
+            Severity="Warning"
+            Title="采集器没有在运行"
+            IsClosable="True"
+            Closed="AgentBar_Closed">
+            <InfoBar.ActionButton>
+                <Button Content="重启采集器" Click="AgentRestart_Click" />
+            </InfoBar.ActionButton>
+        </InfoBar>
+
         <NavigationView
             x:Name="Nav"
-            Grid.Row="1"
+            Grid.Row="2"
             IsBackButtonVisible="Collapsed"
             IsSettingsVisible="False"
             OpenPaneLength="200"

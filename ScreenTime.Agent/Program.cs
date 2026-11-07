@@ -558,10 +558,13 @@ internal static class Program
         {
             if (_tray is null) return;
 
+            var until = PausedUntil();
+            _tray.SetPaused(until);
+
             string text;
-            if (PausedUntil() is { } until)
+            if (until is { } pausedUntil)
             {
-                text = $"已暂停至 {until.ToLocalTime():HH:mm}";
+                text = $"已暂停至 {pausedUntil.ToLocalTime():HH:mm}";
             }
             else
             {

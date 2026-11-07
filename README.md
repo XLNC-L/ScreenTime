@@ -195,7 +195,7 @@ ScreenTime.WinUI/           界面进程
 dotnet test ScreenTime.sln -c Release
 ```
 
-157 个用例，覆盖 `ScreenTime.Core` 的纯逻辑：
+166 个用例，覆盖 `ScreenTime.Core` 的纯逻辑：
 
 - **统计口径**（`StatsService`）：区间并集（重叠 / 嵌套 / 相邻 / 乱序 / 倒序 / 空）、
   时长格式化（0、秒级、分钟级、小时级、NaN、Infinity、超大值）

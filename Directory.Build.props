@@ -8,4 +8,12 @@
     <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
   </PropertyGroup>
 
+  <!--
+    版本号只在这里写一份，三个 csproj 不再各写一遍（三处同步容易漏）。
+    CI / 发布脚本仍可用 -p:Version=x.y.z 覆盖。
+  -->
+  <PropertyGroup>
+    <Version>1.4.5</Version>
+  </PropertyGroup>
+
 </Project>

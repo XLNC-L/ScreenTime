@@ -166,7 +166,7 @@ public partial class App : Application
     }
 
     /// <summary>确保采集器进程在跑（Agent 常驻托盘负责采集；UI 显示完退出不影响采集）。</summary>
-    private static void EnsureAgentRunning()
+    internal static void EnsureAgentRunning()
     {
         try
         {

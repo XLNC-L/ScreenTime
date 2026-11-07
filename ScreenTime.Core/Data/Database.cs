@@ -1871,6 +1871,43 @@ public sealed class Database
         return list;
     }
 
+    /// <summary>
+    /// 采集器确认掉线的时段：从 shutdown 事件到下一个 boot / display_on。
+    /// 时间线据此标注「未记录」，与锁屏、待机造成的正常空档区分开。
+    /// SystemDown=true 表示下一条是 boot（设备关机），false 表示采集器单独退出。
+    /// </summary>
+    public List<(DateTime StartLocal, DateTime EndLocal, bool SystemDown)> QueryCollectorGaps(DateTime localDay)
+    {
+        var (fromUtc, toUtc) = StatsService.DayRange(localDay);
+        var events = QuerySessionEvents(fromUtc, toUtc);
+        var gaps = new List<(DateTime, DateTime, bool)>();
+        DateTime? downSince = null;
+
+        foreach (var e in events)
+        {
+            if (e.Type == "shutdown")
+            {
+                downSince = ParseIso(e.TsUtc);
+            }
+            else if (downSince is { } since && (e.Type == "boot" || e.Type == "display_on"))
+            {
+                var back = ParseIso(e.TsUtc);
+                if (back - since >= TimeSpan.FromMinutes(5))
+                    gaps.Add((since.ToLocalTime(), back.ToLocalTime(), e.Type == "boot"));
+                downSince = null;
+            }
+        }
+
+        // 还没恢复：标到当前时间，前端按当天范围裁剪
+        if (downSince is { } open)
+        {
+            var now = DateTime.UtcNow;
+            if (now - open >= TimeSpan.FromMinutes(5))
+                gaps.Add((open.ToLocalTime(), now.ToLocalTime(), false));
+        }
+        return gaps;
+    }
+
     public List<(int Id, string Name, string Category, string ProcessName, int Ignored, int MergedInto,
         string ExePath, string DefaultPurpose, int SegmentCount, string IconSource)> GetAllApps()
     {
