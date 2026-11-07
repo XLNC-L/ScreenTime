@@ -1,0 +1,258 @@
+<Page
+    x:Class="ScreenTime.Pages.TodayPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:ui="using:ScreenTime.UI">
+
+    <ScrollViewer>
+        <StackPanel Margin="32,24,32,32" Spacing="24">
+
+            <!-- 页头 -->
+            <Grid>
+                <StackPanel>
+                    <TextBlock Style="{StaticResource TitleTextBlockStyle}" Text="今日" />
+                    <TextBlock x:Name="DateText" Style="{StaticResource BodyTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                </StackPanel>
+            </Grid>
+
+            <!-- 加载失败时的页内提示，不靠全局兜底留白 -->
+            <InfoBar
+                x:Name="ErrorBar"
+                IsClosable="False"
+                IsOpen="False"
+                Severity="Error"
+                Title="加载失败">
+                <InfoBar.ActionButton>
+                    <Button Click="RetryBtn_Click" Content="重试" />
+                </InfoBar.ActionButton>
+            </InfoBar>
+
+            <!-- 概览卡片 -->
+            <Grid ColumnSpacing="12">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+
+                <Border
+                    Grid.Column="0"
+                    Padding="16"
+                    Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                    BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                    BorderThickness="1"
+                    CornerRadius="8">
+                    <StackPanel Spacing="4">
+                        <TextBlock Style="{StaticResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" Text="今日总时长" />
+                        <TextBlock x:Name="TotalText" Style="{StaticResource TitleTextBlockStyle}" />
+                    </StackPanel>
+                </Border>
+
+                <Border
+                    Grid.Column="1"
+                    Padding="16"
+                    Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                    BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                    BorderThickness="1"
+                    CornerRadius="8">
+                    <StackPanel Spacing="4">
+                        <TextBlock Style="{StaticResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" Text="前台时长" />
+                        <TextBlock x:Name="FgText" Style="{StaticResource TitleTextBlockStyle}" />
+                    </StackPanel>
+                </Border>
+
+                <Border
+                    Grid.Column="2"
+                    Padding="16"
+                    Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                    BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                    BorderThickness="1"
+                    CornerRadius="8"
+                    ToolTipService.ToolTip="前台时长 + 后台播放 = 今日总时长。&#x0a;后台播放只统计「没有前台应用、但有声音」的时间，&#x0a;在前台应用里同时出声的那部分已经算在前台里了，不重复计。">
+                    <StackPanel Spacing="4">
+                        <TextBlock Style="{StaticResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" Text="后台播放" />
+                        <TextBlock x:Name="AudioText" Style="{StaticResource TitleTextBlockStyle}" />
+                    </StackPanel>
+                </Border>
+
+                <Border
+                    Grid.Column="3"
+                    Padding="16"
+                    Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                    BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                    BorderThickness="1"
+                    CornerRadius="8"
+                    ToolTipService.ToolTip="今天屏幕亮着的累计时长，来自 Windows 的显示器电源状态。&#x0a;锁屏但屏幕还亮着的时间算在内，屏幕熄灭的时间不算。">
+                    <StackPanel Spacing="4">
+                        <TextBlock Style="{StaticResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" Text="亮屏时长" />
+                        <TextBlock x:Name="ScreenOnText" Style="{StaticResource TitleTextBlockStyle}" />
+                    </StackPanel>
+                </Border>
+            </Grid>
+
+            <!-- 左列内容决定高度，右列应用排行绑定左列高度，保证齐平 -->
+            <Grid ColumnSpacing="16">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+
+                <!-- 左列：分类占比 + 用途分布 -->
+                <StackPanel x:Name="LeftCol" Grid.Column="0" VerticalAlignment="Top" Spacing="16">
+
+                <!-- 分类占比 -->
+                <Border
+                    Padding="16"
+                    Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                    BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                    BorderThickness="1"
+                    CornerRadius="8">
+                    <StackPanel Spacing="12">
+                        <TextBlock Style="{StaticResource SubtitleTextBlockStyle}" Text="分类占比" />
+                        <Grid VerticalAlignment="Center">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            <ui:DonutChart x:Name="Donut" Width="140" Height="140" Grid.Column="0" />
+                            <ItemsControl x:Name="Legend" Grid.Column="1" Margin="12,0,0,0" VerticalAlignment="Center">
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <Grid Margin="0,3" Tapped="CategoryLegend_Tapped" IsTapEnabled="True">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="Auto" />
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+                                            <Rectangle Width="12" Height="12" Grid.Column="0" Fill="{Binding Brush}" />
+                                            <TextBlock Margin="8,0,0,0" Grid.Column="1" Text="{Binding Label}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
+                                            <TextBlock Grid.Column="2" Foreground="{ThemeResource TextFillColorSecondaryBrush}" Text="{Binding Percent}" VerticalAlignment="Center" />
+                                        </Grid>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                        </Grid>
+                    </StackPanel>
+                </Border>
+
+                <!-- 用途分布 -->
+                <Border
+                    Padding="16"
+                    Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                    BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                    BorderThickness="1"
+                    CornerRadius="8">
+                    <StackPanel Spacing="12">
+                        <TextBlock Style="{StaticResource SubtitleTextBlockStyle}" Text="用途分布" />
+                        <Grid x:Name="PurposeBar" Height="12" />
+                        <ItemsControl x:Name="PurposeLegend">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <Grid Margin="0,3">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="Auto" />
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="Auto" />
+                                        </Grid.ColumnDefinitions>
+                                        <Rectangle Width="12" Height="12" Grid.Column="0" Fill="{Binding Brush}" />
+                                        <TextBlock Margin="8,0,0,0" Grid.Column="1" Text="{Binding Label}" VerticalAlignment="Center" />
+                                        <TextBlock Grid.Column="2" Foreground="{ThemeResource TextFillColorSecondaryBrush}" Text="{Binding Percent}" VerticalAlignment="Center" />
+                                    </Grid>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </StackPanel>
+                </Border>
+
+                </StackPanel>
+
+                <!-- 应用排行（与左列同处一个 Grid 行，行高由两列中最高的决定，
+                     自然齐平，无需代码回写高度——回写会形成布局抖动） -->
+                <Border
+                    x:Name="AppRankCard"
+                    Grid.Column="1"
+                    VerticalAlignment="Top"
+                    Padding="16"
+                    Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                    BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                    BorderThickness="1"
+                    CornerRadius="8">
+                    <Grid>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="*" />
+                        </Grid.RowDefinitions>
+                        <TextBlock Grid.Row="0" Style="{StaticResource SubtitleTextBlockStyle}" Text="应用排行" />
+                        <!-- 用 ListView 而不是 ItemsControl+ScrollViewer：ItemsControl 无虚拟化，
+                             几十个应用 × 每项 5 控件全部实例化，内存和布局都吃亏。ListView 自带虚拟化 + 滚动 -->
+                        <ListView
+                            x:Name="AppList"
+                            Grid.Row="1"
+                            Margin="0,12,0,0"
+                            SelectionMode="None"
+                            IsItemClickEnabled="False"
+                            RightTapped="AppList_RightTapped"
+                            ScrollViewer.VerticalScrollBarVisibility="Auto"
+                            ScrollViewer.VerticalScrollMode="Enabled"
+                            ScrollViewer.HorizontalScrollBarVisibility="Hidden"
+                            ScrollViewer.HorizontalScrollMode="Disabled">
+                            <ListView.ItemTemplate>
+                                <DataTemplate>
+                                    <Grid Margin="0,4">
+                                        <Grid.RowDefinitions>
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="Auto" />
+                                        </Grid.RowDefinitions>
+                                        <Grid Grid.Row="0">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="Auto" />
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+                                            <Image
+                                                Grid.Column="0"
+                                                Width="24"
+                                                Height="24"
+                                                VerticalAlignment="Center"
+                                                Source="{Binding Icon}" />
+                                            <TextBlock
+                                                Grid.Column="1"
+                                                Margin="8,0,0,0"
+                                                Style="{StaticResource BodyStrongTextBlockStyle}"
+                                                Text="{Binding Name}"
+                                                TextTrimming="CharacterEllipsis"
+                                                VerticalAlignment="Center" />
+                                            <TextBlock
+                                                Grid.Column="2"
+                                                Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                                Text="{Binding Duration}"
+                                                VerticalAlignment="Center" />
+                                        </Grid>
+                                        <ProgressBar Grid.Row="1" Margin="0,3,0,0" Maximum="100" Value="{Binding BarPercent}" />
+                                    </Grid>
+                                </DataTemplate>
+                            </ListView.ItemTemplate>
+                        </ListView>
+                    </Grid>
+                </Border>
+            </Grid>
+
+            <!-- 时间线 -->
+            <Border
+                Padding="16"
+                Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                BorderThickness="1"
+                CornerRadius="8">
+                <StackPanel Spacing="12">
+                    <TextBlock Style="{StaticResource SubtitleTextBlockStyle}" Text="今日时间线" />
+                    <Grid x:Name="TimelineGrid" Height="24" />
+                    <Grid x:Name="HourLabels" Height="16" />
+                    <TextBlock x:Name="TimelineDetail" Style="{StaticResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextTrimming="CharacterEllipsis" />
+                </StackPanel>
+            </Border>
+
+        </StackPanel>
+    </ScrollViewer>
+</Page>

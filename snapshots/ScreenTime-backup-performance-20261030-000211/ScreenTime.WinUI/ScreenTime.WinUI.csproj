@@ -1,0 +1,58 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
+    <TargetPlatformMinVersion>10.0.17763.0</TargetPlatformMinVersion>
+    <RootNamespace>ScreenTime</RootNamespace>
+    <AssemblyName>ScreenTime</AssemblyName>
+    <UseWinUI>true</UseWinUI>
+    <WindowsPackageType>None</WindowsPackageType>
+    <WindowsAppSDKSelfContained>true</WindowsAppSDKSelfContained>
+    <EnableMsixTooling>true</EnableMsixTooling>
+    <RuntimeIdentifiers>win-x64</RuntimeIdentifiers>
+    <!-- 自己写 Program.cs 作入口：单实例检查要放在 WinUI 初始化之前，
+         否则第二个实例在 App 构造函数里 Environment.Exit 会弹系统错误框 -->
+    <DefineConstants>$(DefineConstants);DISABLE_XAML_GENERATED_MAIN</DefineConstants>
+    <!-- 必须固定 RID：WindowsAppSDKSelfContained 需要明确架构，
+         否则直接 dotnet build 会报 "requires a supported Windows architecture" -->
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <Platforms>x64</Platforms>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <ApplicationIcon>Assets\app.ico</ApplicationIcon>
+    <Version>1.2.0</Version>
+    <PublishReadyToRun>true</PublishReadyToRun>
+    <PublishReadyToRunShowWarnings>true</PublishReadyToRunShowWarnings>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.WindowsAppSDK" Version="1.6.250108002" />
+    <PackageReference Include="Microsoft.Win32.SystemEvents" Version="9.0.1" />
+    <PackageReference Include="H.NotifyIcon.WinUI" Version="2.3.2" />
+    <PackageReference Include="CommunityToolkit.WinUI.Controls.SettingsControls" Version="8.2.251219" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- 纯逻辑层（数据访问 / 分类 / 统计 / 用途），不依赖 WinUI，便于单元测试 -->
+    <ProjectReference Include="..\ScreenTime.Core\ScreenTime.Core.csproj" />
+    <!-- 采集组件（前台/音频/会话事件/UWP 图标回填），与 UI 进程解耦后可被采集器进程复用 -->
+    <ProjectReference Include="..\ScreenTime.Collect\ScreenTime.Collect.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Content Include="Assets\app.ico" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <!--
+    publish 时 NuGet 会把 Microsoft.Win32.SystemEvents 的跨平台存根
+    （lib/net8.0，调用即抛 PlatformNotSupportedException）复制到发布根目录，
+    导致发布版在监听锁屏事件时崩溃。发布后用 Windows 实现覆盖。
+  -->
+  <Target Name="FixSystemEventsRuntimeAsset" AfterTargets="Publish">
+    <Copy
+        SourceFiles="$(NuGetPackageRoot)microsoft.win32.systemevents\9.0.1\runtimes\win\lib\net8.0\Microsoft.Win32.SystemEvents.dll"
+        DestinationFolder="$(PublishDir)"
+        SkipUnchangedFiles="true" />
+  </Target>
+</Project>
