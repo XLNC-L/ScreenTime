@@ -1,0 +1,11 @@
+<Project>
+
+  <!--
+    生成并校验 packages.lock.json：依赖版本真正锁定，换机器/换时间还原都一致。
+    锁文件必须提交进版本库，否则等于没锁。
+  -->
+  <PropertyGroup>
+    <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
+  </PropertyGroup>
+
+</Project>
