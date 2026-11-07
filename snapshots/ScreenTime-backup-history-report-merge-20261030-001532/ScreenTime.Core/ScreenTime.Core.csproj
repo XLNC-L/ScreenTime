@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    纯逻辑层：数据访问、分类、统计、用途。
+    刻意不依赖 WinUI / WindowsAppSDK —— 这样单元测试可以直接引用它，
+    不需要拉起 XAML 运行时，也不需要 VS 的打包任务。
+  -->
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <RootNamespace>ScreenTime</RootNamespace>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="8.0.11" />
+  </ItemGroup>
+
+</Project>
